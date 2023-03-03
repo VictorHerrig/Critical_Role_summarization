@@ -28,27 +28,30 @@ class CRD3Dataset(IterableDataset):
         """
         super().__init__()
 
+        # Load config
         with open(cfg_file, 'r') as f:
             self._cfg: dict = yaml.safe_load(f)
-
         self._indir = self._cfg['CRD3_path']
         self._buffer_size = self._cfg['buffer_size']
         idx_file = self._cfg['idx_file']
+
+        # Load filenames from the input directory present in the index file
         file_subset = pd.read_csv(idx_file).values.squeeze().tolist()
         self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
                        if 'json' in fn and fn.split('_')[0] in file_subset]
 
+        # Prepare text processing objects
         self._tokenizer = get_tokenizer('basic_english')
         self._vocab: Vocab = ...  # TODO: Define this
         self._speaker_vocab: Vocab = ...  # TODO: Define this
         # TODO: Use a standard vocab generated from all inputs
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        # Summary-turn pairs are grouped in JSON files
+        # To avoid repeating samples in the same order, use a buffer to pull samples across multiple JSON files
+        # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
-        for speaker_strings, utt_strings, summary_string in self._iter_utt(shuffle=True):
-            # Summary-turn pairs are grouped in JSON files
-            # To avoid repeating samples in the same order, use a buffer to pull samples across multiple JSON files
-            # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
+        for speaker_strings, utt_strings, summary_string in self._iter_chunk(shuffle=True):
             buffer.append((speaker_strings, utt_strings, summary_string))
             if len(buffer) < self._buffer_size:
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
@@ -120,7 +123,7 @@ class CRD3Dataset(IterableDataset):
 
         return data, targets
 
-    def _iter_utt(
+    def _iter_chunk(
             self,
             shuffle: bool = False
     ) -> Iterator[tuple[list[str], list[str], str]]:
