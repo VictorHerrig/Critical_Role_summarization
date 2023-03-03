@@ -1,0 +1,11 @@
+# This file houses the configuration for the CRD3 data.
+
+# Path to the directory containing aligned summary-dialogue files
+CRD3_path: '../../CRD3/data/aligned_data/c=2'
+# Number of aligned data files into which each episode is split. This corresponds to c=n in the CRD3 path
+files_per_episode: 2
+# Path to the file containing the stems of train files
+idx_file: '../../CRD3/data/train_files'
+# Number of summaries present in the datasets (to avoid calculation of dataset length)
+n_summary: ''
+buffer_size: 16
