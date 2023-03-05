@@ -11,7 +11,7 @@ from numpy import ceil
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
 from torchtext.data.utils import get_tokenizer
-from torchtext.vocab import Vocab
+from spacy.vocab import Vocab
 
 
 class CRD3Dataset(IterableDataset):
@@ -24,26 +24,33 @@ class CRD3Dataset(IterableDataset):
         Parameters
         ----------
         cfg_file: str
-            Path to the configuration YAML file. See CRD3.yaml for configuration documentation.
+            Path to the configuration YAML file. See CRD3Dataset_train.yaml for configuration documentation.
         """
         super().__init__()
 
         # Load config
         with open(cfg_file, 'r') as f:
             self._cfg: dict = yaml.safe_load(f)
-        self._indir = self._cfg['CRD3_path']
+        self._indir = path.abspath(self._cfg['CRD3_path'])
         self._buffer_size = self._cfg['buffer_size']
-        idx_file = self._cfg['idx_file']
 
         # Load filenames from the input directory present in the index file
-        file_subset = pd.read_csv(idx_file).values.squeeze().tolist()
-        self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
-                       if 'json' in fn and fn.split('_')[0] in file_subset]
+        if 'idx_file' in self._cfg:
+            idx_file = path.abspath(self._cfg['idx_file'])
+            file_subset = pd.read_csv(idx_file).values.squeeze().tolist()
+            self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
+                           if 'json' in fn and fn.split('_')[0] in file_subset]
+        else:
+            self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
+                           if 'json' in fn]
+        self._files = np.array(self._files)
 
         # Prepare text processing objects
         self._tokenizer = get_tokenizer('basic_english')
-        self._vocab: Vocab = ...  # TODO: Define this
-        self._speaker_vocab: Vocab = ...  # TODO: Define this
+        self._vocab: Vocab = Vocab().from_disk(self._cfg['vocab_path'])
+        self._speaker_vocab: Vocab = Vocab().from_disk(self._cfg['spkr_vocab_path'])
+        self._vocab_hash2idx: np.ndarray = np.load(self._cfg['vocab_hash2idx_path'])
+        self._speaker_vocab_hash2idx: np.ndarray = np.load(self._cfg['spkr_vocab_hash2idx_path'])
         # TODO: Use a standard vocab generated from all inputs
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
@@ -65,6 +72,10 @@ class CRD3Dataset(IterableDataset):
         # TODO: Above perhaps not needed
 
         # TODO: Batch size?
+
+    def lookup_vocab(self, val: str | int) -> int | str:
+        # TODO: Implement str -> hash -> idx and idx -> hash -> str
+        ...
 
     def _prepare_data(
             self,
@@ -94,7 +105,7 @@ class CRD3Dataset(IterableDataset):
             Stacked one-hot token encodings of summary_string of dimension (n_summary_tokens, vocab_size).
         """
         # Tokenize and one-hot summary strings
-        target_idxs = self._vocab.lookup_indices(self._tokenizer(summary_string))
+        target_idxs = self._vocab.lookup_indices(self._tokenizer(summary_string))  # TODO: fix vocab calls
         targets: torch.Tensor = one_hot(target_idxs)
         # targets.requires_grad = True
         # TODO: Decide where to set requires_grad
@@ -117,6 +128,7 @@ class CRD3Dataset(IterableDataset):
 
             # Concatenate speaker and utterance data
             turn_data.append(torch.concat((speaker_data, utt_data)))
+            # TODO: Use sparse because this vocab is going to be huge?
 
         # Concatenate data for all turns in the chunk
         data = torch.concat(turn_data)
