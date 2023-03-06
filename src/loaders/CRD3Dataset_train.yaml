@@ -16,7 +16,7 @@ buffer_size: 256
 vocab_path: '../data/CRD3_vocab'
 # Path to text vocab hash-to-idx file
 vocab_hash2idx_path: '../data/CRD3_vocab_hash_idxs.npy'
-# Path to spoeaker vocab
+# Path to speaker vocab
 spkr_vocab_path: '../data/CRD3_spkr_vocab'
-# Path to spaker vocab hash-to-idx file
+# Path to speaker vocab hash-to-idx file
 spkr_vocab_hash2idx_path: '../data/CRD3_spkr_vocab_hash_idxs.npy'

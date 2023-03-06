@@ -8,6 +8,8 @@ import pandas as pd
 import torch
 import yaml
 from numpy import ceil
+from spacy.lang.en import English
+from spacy.util import compile_suffix_regex, compile_infix_regex, compile_prefix_regex
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
 from torchtext.data.utils import get_tokenizer
@@ -46,7 +48,7 @@ class CRD3Dataset(IterableDataset):
         self._files = np.array(self._files)
 
         # Prepare text processing objects
-        self._tokenizer = get_tokenizer('basic_english')
+        self._tokenizer = self.get_tokenizer()
         self._vocab: Vocab = Vocab().from_disk(self._cfg['vocab_path'])
         self._speaker_vocab: Vocab = Vocab().from_disk(self._cfg['spkr_vocab_path'])
         self._vocab_hash2idx: np.ndarray = np.load(self._cfg['vocab_hash2idx_path'])
@@ -58,7 +60,7 @@ class CRD3Dataset(IterableDataset):
         # To avoid repeating samples in the same order, use a buffer to pull samples across multiple JSON files
         # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
-        for speaker_strings, utt_strings, summary_string in self._iter_chunk(shuffle=True):
+        for speaker_strings, utt_strings, summary_string in self.iter_chunk(shuffle=True):
             buffer.append((speaker_strings, utt_strings, summary_string))
             if len(buffer) < self._buffer_size:
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
@@ -76,6 +78,23 @@ class CRD3Dataset(IterableDataset):
     def lookup_vocab(self, val: str | int) -> int | str:
         # TODO: Implement str -> hash -> idx and idx -> hash -> str
         ...
+
+    @staticmethod
+    def get_tokenizer():
+        """Returns an English tokenizer with some extra rules to deal with some peculiarities in the data."""
+        nlp = English()
+        suffixes = nlp.Defaults.suffixes + [r'''--$''', r'''\)$''', r''':$''', r'''\]$''', r'''\-$''']
+        prefixes = nlp.Defaults.prefixes + [r'''^--''', r'''^\(''', r'''^\[''', r'''^\-''']
+        infixes = nlp.Defaults.infixes + [
+            r'''\(''', r'''\)''', r'''--''', r'''"''', r'''\[''', r'''\]''',
+            r'''(?<=[dmsu123])x(?=[0-9]{1,3})''']  # Last one is for episode numbers, e.g. 1x24, sx65, e3x01...
+        suffix_regex = compile_suffix_regex(suffixes)
+        prefix_regex = compile_prefix_regex(prefixes)
+        infix_regex = compile_infix_regex(infixes)
+        nlp.tokenizer.suffix_search = suffix_regex.search
+        nlp.tokenizer.prefix_search = prefix_regex.search
+        nlp.tokenizer.infix_finditer = infix_regex.finditer
+        return nlp.tokenizer
 
     def _prepare_data(
             self,
@@ -135,7 +154,7 @@ class CRD3Dataset(IterableDataset):
 
         return data, targets
 
-    def _iter_chunk(
+    def iter_chunk(
             self,
             shuffle: bool = False
     ) -> Iterator[tuple[list[str], list[str], str]]:
