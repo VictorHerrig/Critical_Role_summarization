@@ -53,21 +53,20 @@ class CRD3Dataset(IterableDataset):
         self._speaker_vocab: Vocab = Vocab().from_disk(self._cfg['spkr_vocab_path'])
         self._vocab_hash2idx: np.ndarray = np.load(self._cfg['vocab_hash2idx_path'])
         self._speaker_vocab_hash2idx: np.ndarray = np.load(self._cfg['spkr_vocab_hash2idx_path'])
-        # TODO: Use a standard vocab generated from all inputs
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         # Summary-turn pairs are grouped in JSON files
         # To avoid repeating samples in the same order, use a buffer to pull samples across multiple JSON files
         # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
-        for speaker_strings, utt_strings, summary_string in self.iter_chunk(shuffle=True):
-            buffer.append((speaker_strings, utt_strings, summary_string))
+        for speaker_strings, turn_strings, summary_string in self.iter_chunk(shuffle=True):
+            buffer.append((speaker_strings, turn_strings, summary_string))
             if len(buffer) < self._buffer_size:
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
 
         # Finish out the buffer after all samples have been pulled
-        for speaker_samp, utt_samp, summary_samp in np.random.permutation(buffer):
-            yield self._prepare_data(speaker_samp, utt_samp, summary_samp)
+        for speaker_samp, turn_samp, summary_samp in np.random.permutation(buffer):
+            yield self._prepare_data(speaker_samp, turn_samp, summary_samp)
 
         # Clear out the buffer
         buffer.clear()
@@ -75,9 +74,89 @@ class CRD3Dataset(IterableDataset):
 
         # TODO: Batch size?
 
-    def lookup_vocab(self, val: str | int) -> int | str:
+    def lookup_token(
+            self,
+            val: str | int
+    ) -> int | str:
+        """Lookup either token or indices in the object's vocabulary.
+
+        Parameters
+        ----------
+        val
+
+        Returns
+        -------
+
+        """
         # TODO: Implement str -> hash -> idx and idx -> hash -> str
-        ...
+        if isinstance(val, str):
+            try:
+                # str -> hash -> idx
+                ret = self._vocab_hash2idx[self._vocab_hash2idx == self._vocab.strings[val]]
+            except (ValueError, IndexError):
+                raise ValueError('Item not in vocabulary')
+        elif isinstance(val, int):
+            try:
+                # idx -> hash -> str
+                ret = self._vocab.strings[self._vocab_hash2idx[val]]
+            except (ValueError, IndexError):
+                raise ValueError('Item not in vocabulary')
+        else:
+            raise ValueError()
+
+        if len(ret) == 1:  # TODO: Length issues - hash collisions?
+            return ret[0]
+        else:
+            raise Exception('Unknown exception')  # TODO: Improve
+
+    def lookup_speaker_token(
+            self,
+            val: str | int
+    ) -> int | str:
+        """Lookup either token or indices in the object's speaker vocabulary.
+
+        Parameters
+        ----------
+        val
+
+        Returns
+        -------
+
+        """
+        # TODO: Implement str -> hash -> idx and idx -> hash -> str
+        if isinstance(val, str):
+            try:
+                # str -> hash -> idx
+                ret = self._speaker_vocab_hash2idx[self._speaker_vocab_hash2idx == self._speaker_vocab.strings[val]]
+            except (ValueError, IndexError):
+                raise ValueError('Item not in speaker vocabulary')
+        elif isinstance(val, int):
+            try:
+                # idx -> hash -> str
+                ret = self._speaker_vocab.strings[self._speaker_vocab_hash2idx[val]]
+            except (ValueError, IndexError):
+                raise ValueError('Item not in speaker vocabulary')
+        else:
+            raise ValueError()
+
+        if len(ret) == 1:  # TODO: Length issues - hash collisions?
+            return ret[0]
+        else:
+            raise Exception('Unknown exception')  # TODO: Improve
+
+    def construct_string(self, token_idxs: torch.Tensor) -> str:
+        """Builds a string from a list of token indices.
+
+        Parameters
+        ----------
+        token_idxs
+
+        Returns
+        -------
+
+        """
+        # TODO: Simple string join is going to put in spaces where there should be none. Maybe use a spacy function?
+        return ' '.join([self.lookup_token(idx) for idx in token_idxs])
 
     @staticmethod
     def get_tokenizer():
@@ -99,7 +178,7 @@ class CRD3Dataset(IterableDataset):
     def _prepare_data(
             self,
             speaker_strings: list[str],
-            utt_strings: list[str],
+            turn_strings: list[str],
             summary_string: str
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Takes sample strings and converts them to encoded vectors. The targets consist of a tensor of stacked one-hot
@@ -110,47 +189,47 @@ class CRD3Dataset(IterableDataset):
         ----------
         speaker_strings: list[str]
             List of space-separated strings containing speaker name(s).
-        utt_strings: list[str]
-            List of strings containing turn utterances.
+        turn_strings: list[str]
+            List of strings containing turn string.
         summary_string: str
             String containing turn summary.
 
         Returns
         -------
         data: torch.Tensor
-            Stacked concatenation of the multi-hot speaker encoding with each one-hot token encoding of utt_strings of
-            dimension (n_utt_tokens_over_all_turns, speaker_vocab_size + vocab_size).
+            Stacked concatenation of the multi-hot speaker encoding with each one-hot token encoding of turn_strings of
+            dimension (n_turn_tokens_over_all_turns, speaker_vocab_size + vocab_size).
         targets: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (n_summary_tokens, vocab_size).
         """
         # Tokenize and one-hot summary strings
-        target_idxs = self._vocab.lookup_indices(self._tokenizer(summary_string))  # TODO: fix vocab calls
+        target_idxs = [self.lookup_token(t) for t in self._tokenizer(summary_string)]
         targets: torch.Tensor = one_hot(target_idxs)
         # targets.requires_grad = True
         # TODO: Decide where to set requires_grad
 
         # Create multi-hot speaker encoding
-        turn_data: list[torch.Tensor] = []
-        for turn_speaker_str, turn_utt_str in zip(speaker_strings, utt_strings):
-            speaker_idxs = np.array(self._speaker_vocab.lookup_indices(self._tokenizer(turn_speaker_str)))
+        chunk_data: list[torch.Tensor] = []
+        for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
+            speaker_idxs = np.array([self.lookup_token(t) for t in self._tokenizer(turn_speaker_str)])
             speaker_data: torch.Tensor = torch.zeros(len(self._speaker_vocab))
             speaker_data[speaker_idxs] = torch.ones(len(speaker_idxs))
 
-            # Create one-hot encoding for each token in the utterance
-            utt_idxs = self._vocab.lookup_indices(self._tokenizer(turn_utt_str))
-            utt_data: torch.Tensor = one_hot(utt_idxs)
-            # utt_data.requires_grad = True
+            # Create one-hot encoding for each token in the turn
+            turn_idxs = [self.lookup_token(t) for t in self._tokenizer(turn_str)]
+            turn_data: torch.Tensor = one_hot(turn_idxs)
+            # turn_data.requires_grad = True
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
-            speaker_data = speaker_data.repeat(len(utt_data))
+            speaker_data = speaker_data.repeat(len(turn_data))
             # speaker_data.requires_grad = True
 
             # Concatenate speaker and utterance data
-            turn_data.append(torch.concat((speaker_data, utt_data)))
+            chunk_data.append(torch.concat((speaker_data, turn_data)))
             # TODO: Use sparse because this vocab is going to be huge?
 
         # Concatenate data for all turns in the chunk
-        data = torch.concat(turn_data)
+        data = torch.concat(chunk_data)
 
         return data, targets
 
@@ -176,6 +255,32 @@ class CRD3Dataset(IterableDataset):
         """
         for filename in self._iter_files(shuffle):
             yield from CRD3Dataset.parse_json(filename)
+
+    def iter_chunk_w_filename(
+            self,
+            shuffle: bool = False
+    ) -> Iterator[tuple[list[str], list[str], str]]:
+        """Iterates aver json files and returns parsed chunks with the name of the origin file.
+
+        Parameters
+        ----------
+        shuffle: bool, optional
+            Whether to shuffle files. (default = False)
+
+        Yields
+        ------
+        filename: str
+            Origin filename.
+        speaker_strings: list[str]
+            List of strings representing speakers for each turn in the chunk.
+        turn_strings: list[str]
+            List of strings representing utterances for each turn in the chunk.
+        summary_string: str
+            String representing the summary of the chunk.
+        """
+        for filename in self._iter_files(shuffle):
+            for speaker_strings, turn_strings, summary_string in CRD3Dataset.parse_json(filename):
+                yield filename, speaker_strings, turn_strings, summary_string
 
     def _iter_files(
             self,
@@ -224,7 +329,7 @@ class CRD3Dataset(IterableDataset):
         ------
         speaker_strings: list[str]
             List of strings representing speakers for each turn in the chunk.
-        utt_strings: list[str]
+        turn_strings: list[str]
             List of strings representing utterances for each turn in the chunk.
         summary_string: str
             String representing the summary of the chunk.
@@ -234,9 +339,9 @@ class CRD3Dataset(IterableDataset):
             for chunk in json_data:
                 # Load summary, speaker and utterance strings
                 summary_string: str = chunk['CHUNK']
-                speaker_strings, utt_strings = zip(*[(' '.join(c['NAMES']), ' '.join(c['UTTERANCES']))
+                speaker_strings, turn_strings = zip(*[(' '.join(c['NAMES']), ' '.join(c['UTTERANCES']))
                                                      for c in chunk['TURNS']])
-                yield speaker_strings, utt_strings, summary_string
+                yield speaker_strings, turn_strings, summary_string
 
     def __len__(self):
         return len(self._files)
