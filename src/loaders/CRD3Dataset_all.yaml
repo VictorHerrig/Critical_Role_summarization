@@ -1,0 +1,20 @@
+# This file houses the configuration for the CRD3 data.
+
+# Path to the directory containing aligned summary-dialogue files
+# This value assumes you are running from the src/ directory. Adjust as needed.
+CRD3_path: '../CRD3/data/aligned data/c=4/'
+# Number of aligned data files into which each episode is split. This corresponds to c=n in the CRD3 path
+files_per_episode: 2
+# Number of summaries present in the datasets (to avoid calculation of dataset length)
+n_summary: ''
+# Size of the chunk buffer of the dataset. Large buffers will allow for randomization over more files, but will consume
+# more memory.
+buffer_size: 256
+# Path to text vocab
+vocab_path: '../data/CRD3_vocab'
+# Path to text vocab hash-to-idx file
+vocab_hash2idx_path: '../data/CRD3_vocab_hash_idxs.npy'
+# Path to speaker vocab
+spkr_vocab_path: '../data/CRD3_spkr_vocab'
+# Path to speaker vocab hash-to-idx file
+spkr_vocab_hash2idx_path: '../data/CRD3_spkr_vocab_hash_idxs.npy'
