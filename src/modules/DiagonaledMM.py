@@ -1,7 +1,6 @@
 """
-Taken from the Longformer code develpped by the Allen Institute for AI under the Apache License:
+Taken from the Longformer code developed by the Allen Institute for AI under the Apache License:
 https://github.com/allenai/longformer
-
 """
 from typing import Union
 from functools import lru_cache
