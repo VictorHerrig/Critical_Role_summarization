@@ -12,7 +12,14 @@ from .DiagonaledMM import diagonaled_mm
 
 
 class LocalSelfAttention(nn.Module):
-    def __init__(self, hidden_size: int, window_size: int = 1024, num_heads: int = 8, dropout: float = 0.1):
+    def __init__(
+            self,
+            hidden_size: int,
+            window_size: int = 1024,
+            num_heads: int = 8,
+            dropout: float = 0.1,
+            device: str = None
+    ):
         """
 
         Parameters
@@ -24,6 +31,8 @@ class LocalSelfAttention(nn.Module):
         num_heads: int
             ...
         dropout: float
+            ...
+        device: str
             ...
         """
         super().__init__()
