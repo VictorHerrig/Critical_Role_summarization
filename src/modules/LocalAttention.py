@@ -81,7 +81,7 @@ class LocalSelfAttention(nn.Module):
         # Q x K using diagonaled mat mul
         attn_weights = diagonaled_mm(multihead_q, multihead_k, self.attention_window, torch.ones(self.num_heads), False, 0, False)
 
-        # TODO: Masking ... if needed
+        # TODO: Masking ... definitely is needed
         # Apply mask(s)
         masked_attn_weights = attn_weights
 

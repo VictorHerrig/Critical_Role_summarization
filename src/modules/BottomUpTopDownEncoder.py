@@ -200,6 +200,7 @@ class BottomUpTopDownEncoder(nn.Module):
         )
 
     def forward(self, val: Tensor) -> Tensor:
+        # TODO: Mask
         bottom_lvl_repr, top_lvl_repr = self._bottom_up_encoder(val)
         final_token_repr = self._top_down_encoder(bottom_lvl_repr, top_lvl_repr)
         return final_token_repr
