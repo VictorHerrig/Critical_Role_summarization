@@ -111,12 +111,10 @@ class CRD3SummarizationModel(nn.Module):
             eos = False
 
             beams = torch.zeros((0, beam_size, self.vocab_size))  # (seq_len, beam_size, model_size)
-            beam_probs = torch.ones(1)  # (beam_size)
-            retired_beams = torch.zeros(beam_size, dtype=torch.bool)
+            beam_probs = torch.ones(1)  # (beam_size, )
+            is_retired = torch.zeros(beam_size, dtype=torch.bool)
 
-            current_beam_size = beam_size  # TODO: Maybe not needed
-
-            while not eos and tgt.shape[0] < max_tgt_seq_len:
+            while not eos and tgt.size(0) < max_tgt_seq_len:
                 # Get output sequences for all beams
                 out_seq = self._model.model.decoder.forward(tgt, src_encoding)  # (seq_len, beam_size, model_size)
                 # TODO: Maybe this ... check later
@@ -124,50 +122,52 @@ class CRD3SummarizationModel(nn.Module):
                 # No need to calculate the whole sequence. We will find the marginal prob later
                 last_token = out_seq[-1, ...]  # (beam_size, model_size)
                 probs = self._decoder_smax(self._decoder_linear(last_token))  # (beam_size, vocab_size)
-                # seq_probs = self._decoder_smax(self._decoder_linear(out_seq))  # (seq_len, beam_size, vocab_size)
-                # probs = torch.prod(seq_probs, dim=0)  # (beam_size, vocab_size)
 
                 # Find full sequence probs
                 if beam_probs.size() == 1:
                     # First run or a simple greedy search
                     marginal_probs = probs
                 else:
-                    marginal_probs = beam_probs[~retired_beams] * probs
-                flat_topk_idx = marginal_probs.view(-1).argsort()[-beam_size:]  # TODO: If beams cannot be brough out of retirement, this will be current_beam_size
+                    marginal_probs = beam_probs[~is_retired].unsqueeze(-1) * probs
 
                 # Take the top k sequences
+                flat_topk_idx = marginal_probs.view(-1).argsort()[-beam_size:]
                 topk_idx = unravel_index(flat_topk_idx, marginal_probs.shape)  # (beam_size, 2) tuple
                 topk_beams_idx = torch.tensor([i[0] for i in topk_idx])  # (beam_size, )
-                topk_vocab_idx = torch.tensor([i[0] for i in topk_idx])  # (beam_size, )
+                topk_vocab_idx = torch.tensor([i[1] for i in topk_idx])  # (beam_size, )
                 topk_vals = probs[topk_beams_idx, topk_vocab_idx]  # (beam_size, )
 
-                # TODO: Check for and store completed sequences (i.e. sequences with <pad> prediction)
-                #  Will have to compete with new beams, i.e. if beams is 5, and one is finished, pass the other 4 beams
-                #  to the next loop and see if the held back one is beaten.
-
-                # TODO: Check for new beams that are better than retired beams
-                # TODO: It occurs to me that the above should be impossible as current beam prob can only decrease
-                # TODO: Mind you, a previously higher=prob beam could spawn several higher prob beams and therefore
-                #  replace a retired beam
+                # The following can lead to more than beam_size beams added if there are retired beams - the lowest prob
+                # beams including retired beams will be culled
 
                 # One-hot new tok-k sequences to add to previous beams, and pad retired beams
-                new_tokens = torch.zeros(beam_size, self.vocab_size, dtype=torch.float32)
-                new_tokens[~retired_beams, topk_vocab_idx] = 1.
-                new_tokens[retired_beams, self._pad_token_idx] = 1.
+                n_added = topk_vals.shape(0) + is_retired.sum()
+                retired_idx: Tensor = torch.argwhere(is_retired)
+                not_retired_idx = torch.concat((torch.argwhere(~is_retired), torch.arange(len(is_retired), n_added)))
+                new_tokens = torch.zeros(n_added, self.vocab_size, dtype=torch.float32)  # (n_added, vocab_size)
+                new_tokens[not_retired_idx, topk_vocab_idx] = 1.
+                new_tokens[retired_idx, self._pad_token_idx] = 1.
 
-                # Add new tokens to beam sequences
-                beams[~retired_beams] = beams[~retired_beams][topk_beams_idx]  # If beams were superseded
-                beams = torch.concat((beams, new_tokens), dim=0)
-                beam_probs[~retired_beams] = topk_vals
+                # Add new tokens to beam sequences and cull low prob beams
+                new_base_beam_idx = torch.arange(n_added)
+                new_base_beam_idx[not_retired_idx] = topk_beams_idx  # (n_added,)
+                new_beams = torch.concat((beams[:, new_base_beam_idx, :], new_tokens))  # (seq_len + 1, n_added, vocab_size)
 
-                new_retired_beams = new_tokens.argmax(-1) == self._pad_token_idx
-                retired_beams = beams[-1].argmax(-1) == self._pad_token_idx
+                # Collect beam probs and pick the top k
+                new_beam_probs = torch.zeros(n_added)
+                new_beam_probs[retired_idx] = beam_probs[is_retired]
+                new_beam_probs[not_retired_idx] = topk_vals
+                topk_new_beams = torch.argsort(new_beam_probs)[-beam_size:]
 
-                # TODO: Check
-                tgt = torch.concat((tgt[0:1, ~new_retired_beams], beams[~retired_beams]), dim=0)  # Make sure to retain the leading <pad>
+                # Assign the new topk beams and retire any that need
+                beams = new_beams[topk_new_beams]  # (seq_len + 1, beam_size, vocab_size)
+                beam_probs = new_beam_probs[topk_new_beams]  # (beam_size, )
+                is_retired = beams[-1].argmax(-1) == self._pad_token_idx
+
+                tgt = beams
 
                 # If all beams have finished, we are done
-                eos = retired_beams.all()
+                eos = is_retired.all()
 
             max_prob_idx = beam_probs.argmax()
             output = beams[max_prob_idx]
