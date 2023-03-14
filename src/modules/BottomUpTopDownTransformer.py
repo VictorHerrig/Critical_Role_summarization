@@ -65,7 +65,7 @@ class BottomUpTopDownTransformer(nn.Module):
             avg_pool_stride,
             device
         )
-        self._model = nn.Transformer(
+        self.model = nn.Transformer(
             d_model=model_dim,
             nhead=num_attn_heads,
             custom_encoder=encoder,
@@ -74,5 +74,17 @@ class BottomUpTopDownTransformer(nn.Module):
             device=device
         )
 
-    def forward(self, src: Tensor, tgt: Tensor) -> Tensor:
-        return self._model.forward(self._pos_encoding(src), self._pos_encoding(tgt))
+    def forward(
+            self,
+            src: Tensor,
+            tgt: Tensor,
+            tgt_mask: Tensor = None,
+            src_key_padding_mask: Tensor = None,
+            tgt_key_padding_mask: Tensor = None
+    ) -> Tensor:
+        return self.model.forward(self._pos_encoding(src), self._pos_encoding(tgt), tgt_mask=tgt_mask,
+                                  src_key_padding_mask=src_key_padding_mask, tgt_key_padding_mask=tgt_key_padding_mask)
+
+    @staticmethod
+    def generate_square_subsequent_mask(sz, device='cpu'):
+        return nn.Transformer.generate_square_subsequent_mask(sz, device=device)
