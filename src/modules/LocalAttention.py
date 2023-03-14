@@ -3,12 +3,13 @@ Adapted from the Longformer code developed by the Allen Institute for AI under t
 https://github.com/allenai/longformer
 """
 import math
+from typing import Optional
 
 import torch
-from torch.nn import functional as F
+from torch.nn import functional as F, Tensor
 from torch import nn
 
-from .DiagonaledMM import diagonaled_mm
+from .DiagonaledMM import diagonaled_mm, mask_invalid_locations
 
 
 class LocalSelfAttention(nn.Module):
@@ -18,6 +19,7 @@ class LocalSelfAttention(nn.Module):
             window_size: int = 1024,
             num_heads: int = 8,
             dropout: float = 0.1,
+            autoregressive: bool = True,
             device: str = None
     ):
         """
@@ -45,62 +47,91 @@ class LocalSelfAttention(nn.Module):
 
         self._window_size = window_size
         self._num_heads = num_heads
-        self._head_dim = int(hidden_size / num_heads)
         self._embed_dim = hidden_size
 
-        self._query = nn.Linear(hidden_size, self.embed_dim)
-        self._key = nn.Linear(hidden_size, self.embed_dim)
-        self._value = nn.Linear(hidden_size, self.embed_dim)
+        self._query = nn.Linear(hidden_size, hidden_size)
+        self._key = nn.Linear(hidden_size, hidden_size)
+        self._value = nn.Linear(hidden_size, hidden_size)
+        self._softmax = nn.Softmax(hidden_size)
+
+        self._autoregressive = autoregressive
+        assert self._window > 0
 
         self._dropout = dropout
 
-    def forward(self, val: torch.Tensor) -> torch.Tensor:
-        """
+    def forward(
+            self,
+            val: Tensor,
+            key_padding_mask: Optional[Tensor] = None
+    ) -> Tensor:
+        """...
 
         Parameters
         ----------
-        val: torch.Tensor
-            Tensor of shape (sequence_length x batch_size x hidden_dim).
+        val: Tensor
+            Tensor of shape (sequence_length, batch_size, hidden_dim).
+        key_padding_mask: Tensor, optional
+            Tensor of shape (sequence_length, batch_size) containing 1 where input sequence is padded and 0 everywhere
+            else. If None, no masking will be used. (Default = None)
 
         Returns
         -------
         Tensor
-            Attention output tensor of shape (sequence_length x batch_size x hidden_dim)
+            Attention output tensor of shape (sequence_length, batch_size, hidden_dim)
         """
-        transposed_val = val.transpose(0, 1)
+        #transposed_val = val.transpose(0, 1)  # (batch_size, sequence_length, hidden_dim)
         seq_len, bsz, embed_dim = val.size()
 
         # Linear projection onto multiple heads
-        q = self.query(transposed_val) / math.sqrt(self.head_dim)  # Scale Q by sqrt(head_dim) ahead of time
-        k = self.key(transposed_val)
-        v = self.value(transposed_val)
+        q = self.query(val) / math.sqrt(self.head_dim)  # Scale Q by sqrt(head_dim) ahead of time
+        k = self.key(val)
+        v = self.value(val)
+        # Diagonaled matmul wants (batch, seq_len, n_head, head_dim) so we transpose axes 0 and 1
         multihead_q = q.view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1).float().contiguous()
         multihead_k = k.view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1).float().contiguous()
         multihead_v = v.view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1).float().contiguous()
 
         # Q x K using diagonaled mat mul
-        attn_weights = diagonaled_mm(multihead_q, multihead_k, self.attention_window, torch.ones(self.num_heads), False, 0, False)
+        attn_weights = diagonaled_mm(multihead_q, multihead_k, self.window_size, self.dilation, False, 0, False)
 
-        # TODO: Masking ... definitely is needed
-        # Apply mask(s)
-        masked_attn_weights = attn_weights
+        # Apply attention mask
+        mask_invalid_locations(attn_weights, self.window_size, self.dilation, self.autoregressive)
+        if key_padding_mask is not None:
+            # This implementation is fast and takes very little memory because num_heads x hidden_size = 1
+            # from (bsz, seq_len) to (bsz, seq_len, num_heads, hidden_size)
+            key_padding_mask = key_padding_mask.unsqueeze(dim=-1).unsqueeze(dim=-1)
+            # cast to float/half then replace 1s with -inf
+            float_mask = key_padding_mask.type_as(q).masked_fill(key_padding_mask, -10000.0)
+            float_mask = float_mask.repeat(1, 1, 1, 1)
+            all_ones = float_mask.new_ones(size=float_mask.size())  # tensor of ones
+            # diagonal mask with zeros everywhere and -inf inplace of padding
+            d_mask = diagonaled_mm(all_ones, float_mask, self.window_size, self.dilation, False, 0, False)
+
+            attn_weights += d_mask
+
+        assert list(attn_weights.size())[:3] == [bsz, seq_len, self.num_heads]
+        assert attn_weights.size(dim=3) in [self.window_size * 2 + 1, self.window_size * 3]
 
         # Softmax of masked, scaled Q x K
-        attn_weights_float = F.softmax(masked_attn_weights, dim=-1, dtype=torch.float32)
+        attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
         attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
 
         # Matmul attention probs and value
-        attn = diagonaled_mm(attn_probs, multihead_v, self.attention_window, torch.ones(self.num_heads), True, 0, False).type_as(val)
+        attn = diagonaled_mm(attn_probs, multihead_v, self.window_size, self.dilation, True, 0, False).type_as(val)
         assert list(attn.size()) == [bsz, seq_len, self.num_heads, self.head_dim]
-        output_attn = attn.transpose(0, 1).reshape(seq_len, bsz, embed_dim).contiguous()
+        output_attn = attn.transpose(0, 1).reshape(seq_len, bsz, embed_dim).contiguous()  # (seq_len, batch, embed_dim)
 
-        # TODO: Context layer
+        # TODO: Output context layer? Just the permutation of (batch, n_head, seq_len, windw_size)
 
         return output_attn
 
     @property
     def window_size(self):
         return self._window_size
+
+    @property
+    def dilation(self):
+        return 1
 
     @property
     def query(self):
@@ -120,7 +151,7 @@ class LocalSelfAttention(nn.Module):
 
     @property
     def head_dim(self):
-        return self._head_dim
+        return int(self.embed_dim / self.num_heads)
 
     @property
     def embed_dim(self):
@@ -129,3 +160,7 @@ class LocalSelfAttention(nn.Module):
     @property
     def dropout(self):
         return self._dropout
+
+    @property
+    def autoregressive(self):
+        return self._autoregressive
