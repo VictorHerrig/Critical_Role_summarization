@@ -91,7 +91,9 @@ class CRD3SummarizationModel(nn.Module):
             speakers: Tensor,
             src_key_padding_mask: Tensor = None,  # TODO: Why would this be necessary at inference time?
             max_tgt_seq_len: int = 500,
-            beam_size: int = 5
+            beam_size: int = 8,
+            top_k: int = 32,
+            top_p: float = 0.94
     ) -> Tensor:
         with torch.no_grad():
             assert beam_size < self._vocab_size
@@ -122,6 +124,17 @@ class CRD3SummarizationModel(nn.Module):
                 # No need to calculate the whole sequence. We will find the marginal prob later
                 last_token = out_seq[-1, ...]  # (beam_size, model_size)
                 probs = self._decoder_smax(self._decoder_linear(last_token))  # (beam_size, vocab_size)
+
+                # Use top-k and top-p methods to consolidate prob
+                prob_sort_idx = torch.argsort(probs, dim=1, descending=True)  # (beam_size, vocab_size)
+                # Zero all non-top-k choices
+                not_top_k_idx = probs[prob_sort_idx][:, top_k:]  # (beam_size, top_k)
+                probs[not_top_k_idx] = 0.
+                # Zero all non-top-p choices
+                top_p_idx = torch.cumsum(probs[prob_sort_idx], dim=1) < top_p  # (beam_size, vocab_size)
+                probs[~top_p_idx] = 0.
+                # Scale the remainder
+                probs = probs / torch.sum(probs, dim=1)  # (beam_size, vocab_size)
 
                 # Find full sequence probs
                 if beam_probs.size() == 1:
@@ -164,7 +177,7 @@ class CRD3SummarizationModel(nn.Module):
                 beam_probs = new_beam_probs[topk_new_beams]  # (beam_size, )
                 is_retired = beams[-1].argmax(-1) == self._pad_token_idx
 
-                tgt = beams
+                tgt = beams[~is_retired]
 
                 # If all beams have finished, we are done
                 eos = is_retired.all()

@@ -65,7 +65,7 @@ class BottomUpTopDownTransformer(nn.Module):
             avg_pool_stride,
             device
         )
-        self.model = nn.Transformer(
+        self._model = nn.Transformer(
             d_model=model_dim,
             nhead=num_attn_heads,
             custom_encoder=encoder,
@@ -88,3 +88,7 @@ class BottomUpTopDownTransformer(nn.Module):
     @staticmethod
     def generate_square_subsequent_mask(sz, device='cpu'):
         return nn.Transformer.generate_square_subsequent_mask(sz, device=device)
+
+    @property
+    def model(self):
+        return self._model
