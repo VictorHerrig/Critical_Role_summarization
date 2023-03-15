@@ -29,7 +29,7 @@ class CRD3Dataset(IterableDataset):
             Path to the configuration YAML file. See CRD3Dataset_train.yaml for configuration documentation.
         """
         super().__init__()
-
+        # TODO: src_seq_len and tgt_seq_len
         # Load config
         with open(cfg_file, 'r') as f:
             self._cfg: dict = yaml.safe_load(f)
@@ -48,6 +48,8 @@ class CRD3Dataset(IterableDataset):
         self._files = np.array(self._files)
 
         # Prepare text processing objects
+        self._max_src_seq_len = self._cfg['max_src_seq_len']
+        self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
         self._tokenizer = self.get_tokenizer()
         self._vocab: Vocab = Vocab().from_disk(self._cfg['vocab_path'])
         self._speaker_vocab: Vocab = Vocab().from_disk(self._cfg['spkr_vocab_path'])
@@ -123,7 +125,6 @@ class CRD3Dataset(IterableDataset):
         -------
 
         """
-        # TODO: Implement str -> hash -> idx and idx -> hash -> str
         if isinstance(val, str):
             try:
                 # str -> hash -> idx
@@ -161,6 +162,7 @@ class CRD3Dataset(IterableDataset):
     @staticmethod
     def get_tokenizer():
         """Returns an English tokenizer with some extra rules to deal with some peculiarities in the data."""
+        # TODO: Use Huggingface tokenizer...
         nlp = English()
         suffixes = nlp.Defaults.suffixes + [r'''--$''', r'''\)$''', r''':$''', r'''\]$''', r'''\-$''']
         prefixes = nlp.Defaults.prefixes + [r'''^--''', r'''^\(''', r'''^\[''', r'''^\-''']
@@ -180,7 +182,7 @@ class CRD3Dataset(IterableDataset):
             speaker_strings: list[str],
             turn_strings: list[str],
             summary_string: str
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Takes sample strings and converts them to encoded vectors. The targets consist of a tensor of stacked one-hot
         encodings for each summary token. The data consist of a tensor of stacked vecors, each of which is a
         concatenation of a multi-hot speaker encoding with a one-hot token encoding.
@@ -196,20 +198,28 @@ class CRD3Dataset(IterableDataset):
 
         Returns
         -------
-        data: torch.Tensor
-            Stacked concatenation of the multi-hot speaker encoding with each one-hot token encoding of turn_strings of
-            dimension (n_turn_tokens_over_all_turns, speaker_vocab_size + vocab_size).
+        source: torch.Tensor
+            One-hot token encoding of turn_strings of dimension (src_seq_len, vocab_size).
+        speakers: torch.Tensor
+            Multi-hot speaker encoding of dimension (src_seq_len, speaker_vocab_size + vocab_size).
         targets: torch.Tensor
-            Stacked one-hot token encodings of summary_string of dimension (n_summary_tokens, vocab_size).
+            Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
+        src_key_padding_mask: torch.Tensor
+            Padding mask tensor of same shape dimension 0 of source.
+        tgt_key_padding_mask: torch.Tensor
+            Padding mask tensor of same shape dimension 0 of target.
         """
+        pad_token = self.lookup_token('<pad>')
+
         # Tokenize and one-hot summary strings
         target_idxs = [self.lookup_token(t) for t in self._tokenizer(summary_string)]
-        targets: torch.Tensor = one_hot(target_idxs)
+        target: torch.Tensor = one_hot(target_idxs)
         # targets.requires_grad = True
         # TODO: Decide where to set requires_grad
 
         # Create multi-hot speaker encoding
-        chunk_data: list[torch.Tensor] = []
+        src_chunk_data = []
+        speaker_chunk_data = []
         for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
             speaker_idxs = np.array([self.lookup_token(t) for t in self._tokenizer(turn_speaker_str)])
             speaker_data: torch.Tensor = torch.zeros(len(self._speaker_vocab))
@@ -217,21 +227,35 @@ class CRD3Dataset(IterableDataset):
 
             # Create one-hot encoding for each token in the turn
             turn_idxs = [self.lookup_token(t) for t in self._tokenizer(turn_str)]
-            turn_data: torch.Tensor = one_hot(turn_idxs)
+            turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=len(self._vocab))
             # turn_data.requires_grad = True
+            src_chunk_data.append(turn_data)
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
             speaker_data = speaker_data.repeat(len(turn_data))
             # speaker_data.requires_grad = True
+            speaker_chunk_data.append(speaker_data)
 
-            # Concatenate speaker and utterance data
-            chunk_data.append(torch.concat((speaker_data, turn_data)))
-            # TODO: Use sparse because this vocab is going to be huge?
+        source = torch.stack(src_chunk_data, dim=0)
+        speaker = torch.stack(speaker_chunk_data, dim=0)
 
-        # Concatenate data for all turns in the chunk
-        data = torch.concat(chunk_data)
+        src_key_padding_mask = torch.arange(self.max_src_seq_len) > source.size(0)  # (max_src_seq_len, vocab_size)
+        tgt_key_padding_mask = torch.arange(self.max_tgt_seq_len) > target.size(0)  # (max_tgt_seq_len, vocab_size)
 
-        return data, targets
+        src_pad_amt = self.max_src_seq_len - source.size(0)
+        tgt_pad_amt = self.max_tgt_seq_len - target.size(0)
+
+        src_pad_data = torch.zeros((src_pad_amt, len(self._vocab)), dtype=torch.float32)  # (src_pad_amt, vocab_size)
+        src_pad_data[:, pad_token] = 1.
+        speaker_pad_data = torch.zeros((src_pad_amt, len(self._speaker_vocab)), dtype=torch.float32)  # (src_pad_amt, speaker_vocab_size)
+        tgt_pad_data = torch.zeros((tgt_pad_amt, len(self._vocab)), dtype=torch.float32)  # (tgt_pad_amt, vocab_size)
+        tgt_pad_data[:, pad_token] = 1.
+
+        source = torch.concat((source, src_pad_data), dim=0)  # (max_src_seq_len, vocab_size)
+        speaker = torch.concat((speaker, speaker_pad_data), dim=0)  # (max_src_seq_len, speaker_vocab_size)
+        target = torch.concat((target, tgt_pad_data), dim=0)  # (max_tgt_seq_len, vocab_size)
+
+        return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
 
     def iter_chunk(
             self,
@@ -349,3 +373,11 @@ class CRD3Dataset(IterableDataset):
     @property
     def indir(self):
         return self._indir
+
+    @property
+    def max_src_seq_len(self):
+        return self._max_src_seq_len
+
+    @property
+    def max_tgt_seq_len(self):
+        return self._max_tgt_seq_len
