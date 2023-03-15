@@ -20,3 +20,7 @@ vocab_hash2idx_path: '../data/CRD3_vocab_hash_idxs.npy'
 spkr_vocab_path: '../data/CRD3_spkr_vocab'
 # Path to speaker vocab hash-to-idx file
 spkr_vocab_hash2idx_path: '../data/CRD3_spkr_vocab_hash_idxs.npy'
+# Maximum length of source sequences
+max_src_seq_len: 10000
+# Maximum length of target (summary) sequences
+max_tgt_seq_len: 500
