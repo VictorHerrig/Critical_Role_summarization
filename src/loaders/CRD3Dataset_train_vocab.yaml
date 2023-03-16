@@ -10,11 +10,7 @@ n_summary: ''
 # Size of the chunk buffer of the dataset. Large buffers will allow for randomization over more files, but will consume
 # more memory.
 buffer_size: 256
-# Path to text vocab
-vocab_path: '../data/CRD3_vocab'
-# Path to text vocab hash-to-idx file
-vocab_hash2idx_path: '../data/CRD3_vocab_hash_idxs.npy'
-# Path to speaker vocab
-spkr_vocab_path: '../data/CRD3_spkr_vocab'
-# Path to speaker vocab hash-to-idx file
-spkr_vocab_hash2idx_path: '../data/CRD3_spkr_vocab_hash_idxs.npy'
+# Maximum length of source sequences
+max_src_seq_len: 10000
+# Maximum length of target (summary) sequences
+max_tgt_seq_len: 500
