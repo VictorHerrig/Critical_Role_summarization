@@ -8,12 +8,10 @@ import pandas as pd
 import torch
 import yaml
 from numpy import ceil
-from spacy.lang.en import English
-from spacy.util import compile_suffix_regex, compile_infix_regex, compile_prefix_regex
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
-from torchtext.data.utils import get_tokenizer
-from spacy.vocab import Vocab
+
+from tokenizers import Tokenizer
 
 
 class CRD3Dataset(IterableDataset):
@@ -50,11 +48,9 @@ class CRD3Dataset(IterableDataset):
         # Prepare text processing objects
         self._max_src_seq_len = self._cfg['max_src_seq_len']
         self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
-        self._tokenizer = self.get_tokenizer()
-        self._vocab: Vocab = Vocab().from_disk(self._cfg['vocab_path'])
-        self._speaker_vocab: Vocab = Vocab().from_disk(self._cfg['spkr_vocab_path'])
-        self._vocab_hash2idx: np.ndarray = np.load(self._cfg['vocab_hash2idx_path'])
-        self._speaker_vocab_hash2idx: np.ndarray = np.load(self._cfg['spkr_vocab_hash2idx_path'])
+
+        self._tokenizer = Tokenizer.from_file(self._cfg['tokenizer_path']) if 'tokenizer_path' in self._cfg else None
+        self._speaker_tokenizer = Tokenizer.from_file(self._cfg['spkr_tokenizer_path']) if 'spkr_tokenizer_path' in self._cfg else None
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         # Summary-turn pairs are grouped in JSON files
@@ -91,25 +87,20 @@ class CRD3Dataset(IterableDataset):
 
         """
         # TODO: Implement str -> hash -> idx and idx -> hash -> str
+        if self._tokenizer is None:
+            raise ValueError('No tokenizer passed!')
         if isinstance(val, str):
-            try:
-                # str -> hash -> idx
-                ret = self._vocab_hash2idx[self._vocab_hash2idx == self._vocab.strings[val]]
-            except (ValueError, IndexError):
-                raise ValueError('Item not in vocabulary')
+            ret = self._tokenizer.token_to_id(val)
+            if ret is None:
+                ret = self._tokenizer.token_to_id('<UNK>')
         elif isinstance(val, int):
-            try:
-                # idx -> hash -> str
-                ret = self._vocab.strings[self._vocab_hash2idx[val]]
-            except (ValueError, IndexError):
-                raise ValueError('Item not in vocabulary')
+            ret = self._tokenizer.id_to_token(val)
+            if ret is None:
+                ret = '<UNK>'
         else:
             raise ValueError()
 
-        if len(ret) == 1:  # TODO: Length issues - hash collisions?
-            return ret[0]
-        else:
-            raise Exception('Unknown exception')  # TODO: Improve
+        return ret
 
     def lookup_speaker_token(
             self,
@@ -125,25 +116,20 @@ class CRD3Dataset(IterableDataset):
         -------
 
         """
+        if self._speaker_tokenizer is None:
+            raise ValueError('No speaker tokenizer passed!')
         if isinstance(val, str):
-            try:
-                # str -> hash -> idx
-                ret = self._speaker_vocab_hash2idx[self._speaker_vocab_hash2idx == self._speaker_vocab.strings[val]]
-            except (ValueError, IndexError):
-                raise ValueError('Item not in speaker vocabulary')
+            ret = self._speaker_tokenizer.token_to_id(val)
+            if ret is None:
+                ret = self._speaker_tokenizer.token_to_id('<UNK>')
         elif isinstance(val, int):
-            try:
-                # idx -> hash -> str
-                ret = self._speaker_vocab.strings[self._speaker_vocab_hash2idx[val]]
-            except (ValueError, IndexError):
-                raise ValueError('Item not in speaker vocabulary')
+            ret = self._speaker_tokenizer.id_to_token(val)
+            if ret is None:
+                ret = '<UNK>'
         else:
             raise ValueError()
 
-        if len(ret) == 1:  # TODO: Length issues - hash collisions?
-            return ret[0]
-        else:
-            raise Exception('Unknown exception')  # TODO: Improve
+        return ret
 
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
@@ -156,26 +142,9 @@ class CRD3Dataset(IterableDataset):
         -------
 
         """
-        # TODO: Simple string join is going to put in spaces where there should be none. Maybe use a spacy function?
-        return ' '.join([self.lookup_token(idx) for idx in token_idxs])
-
-    @staticmethod
-    def get_tokenizer():
-        """Returns an English tokenizer with some extra rules to deal with some peculiarities in the data."""
-        # TODO: Use Huggingface tokenizer...
-        nlp = English()
-        suffixes = nlp.Defaults.suffixes + [r'''--$''', r'''\)$''', r''':$''', r'''\]$''', r'''\-$''']
-        prefixes = nlp.Defaults.prefixes + [r'''^--''', r'''^\(''', r'''^\[''', r'''^\-''']
-        infixes = nlp.Defaults.infixes + [
-            r'''\(''', r'''\)''', r'''--''', r'''"''', r'''\[''', r'''\]''',
-            r'''(?<=[dmsu123])x(?=[0-9]{1,3})''']  # Last one is for episode numbers, e.g. 1x24, sx65, e3x01...
-        suffix_regex = compile_suffix_regex(suffixes)
-        prefix_regex = compile_prefix_regex(prefixes)
-        infix_regex = compile_infix_regex(infixes)
-        nlp.tokenizer.suffix_search = suffix_regex.search
-        nlp.tokenizer.prefix_search = prefix_regex.search
-        nlp.tokenizer.infix_finditer = infix_regex.finditer
-        return nlp.tokenizer
+        if self._tokenizer is None:
+            raise ValueError('No tokenizer passed!')
+        return self._tokenizer.decode(token_idxs.tolist())
 
     def _prepare_data(
             self,
@@ -209,47 +178,55 @@ class CRD3Dataset(IterableDataset):
         tgt_key_padding_mask: torch.Tensor
             Padding mask tensor of same shape dimension 0 of target.
         """
-        pad_token = self.lookup_token('<pad>')
-
         # Tokenize and one-hot summary strings
-        target_idxs = [self.lookup_token(t) for t in self._tokenizer(summary_string)]
-        target: torch.Tensor = one_hot(target_idxs)
+        target_idxs = self._tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len]
+        target: torch.Tensor = one_hot(target_idxs, num_classes=self.vocab_size).to(torch.float32)
         # targets.requires_grad = True
         # TODO: Decide where to set requires_grad
 
         # Create multi-hot speaker encoding
         src_chunk_data = []
         speaker_chunk_data = []
+        chunk_len = 0
         for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
-            speaker_idxs = np.array([self.lookup_token(t) for t in self._tokenizer(turn_speaker_str)])
-            speaker_data: torch.Tensor = torch.zeros(len(self._speaker_vocab))
-            speaker_data[speaker_idxs] = torch.ones(len(speaker_idxs))
 
             # Create one-hot encoding for each token in the turn
-            turn_idxs = [self.lookup_token(t) for t in self._tokenizer(turn_str)]
-            turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=len(self._vocab))
+            turn_idxs = self._tokenizer.encode(turn_str).ids
+            if len(turn_idxs) + chunk_len > self.max_src_seq_len:
+                turn_idxs = turn_idxs[:self.max_src_seq_len - chunk_len]
+            chunk_len += len(turn_idxs)
+            turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=self.vocab_size).to(torch.float32)
             # turn_data.requires_grad = True
             src_chunk_data.append(turn_data)
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
-            speaker_data = speaker_data.repeat(len(turn_data))
+            speaker_idxs = self._tokenizer.encode(turn_speaker_str).ids
+            speaker_data: torch.Tensor = torch.zeros(self.speaker_vocab_size, dtype=torch.float32)
+            speaker_data[speaker_idxs] = 1.
+            speaker_data = speaker_data.repeat(turn_data.size(0))
             # speaker_data.requires_grad = True
             speaker_chunk_data.append(speaker_data)
 
+            # Only read up to the max chunk length
+            if chunk_len == self.max_src_seq_len:
+                break
+
+        # Concat all chunk data to make source and speaker tensors
         source = torch.stack(src_chunk_data, dim=0)
         speaker = torch.stack(speaker_chunk_data, dim=0)
 
+        # Calculate padding masks
         src_key_padding_mask = torch.arange(self.max_src_seq_len) > source.size(0)  # (max_src_seq_len, vocab_size)
         tgt_key_padding_mask = torch.arange(self.max_tgt_seq_len) > target.size(0)  # (max_tgt_seq_len, vocab_size)
 
+        # Add padding to the source and target. Add zeros to the speaker
         src_pad_amt = self.max_src_seq_len - source.size(0)
         tgt_pad_amt = self.max_tgt_seq_len - target.size(0)
-
-        src_pad_data = torch.zeros((src_pad_amt, len(self._vocab)), dtype=torch.float32)  # (src_pad_amt, vocab_size)
-        src_pad_data[:, pad_token] = 1.
-        speaker_pad_data = torch.zeros((src_pad_amt, len(self._speaker_vocab)), dtype=torch.float32)  # (src_pad_amt, speaker_vocab_size)
-        tgt_pad_data = torch.zeros((tgt_pad_amt, len(self._vocab)), dtype=torch.float32)  # (tgt_pad_amt, vocab_size)
-        tgt_pad_data[:, pad_token] = 1.
+        src_pad_data = torch.zeros((src_pad_amt, self.vocab_size), dtype=torch.float32)  # (src_pad_amt, vocab_size)
+        src_pad_data[:, self.pad_token] = 1.
+        speaker_pad_data = torch.zeros((src_pad_amt, self.speaker_vocab_size), dtype=torch.float32)  # (src_pad_amt, speaker_vocab_size)
+        tgt_pad_data = torch.zeros((tgt_pad_amt, self.vocab_size), dtype=torch.float32)  # (tgt_pad_amt, vocab_size)
+        tgt_pad_data[:, self.pad_token] = 1.
 
         source = torch.concat((source, src_pad_data), dim=0)  # (max_src_seq_len, vocab_size)
         speaker = torch.concat((speaker, speaker_pad_data), dim=0)  # (max_src_seq_len, speaker_vocab_size)
@@ -381,3 +358,27 @@ class CRD3Dataset(IterableDataset):
     @property
     def max_tgt_seq_len(self):
         return self._max_tgt_seq_len
+
+    @property
+    def vocab_size(self):
+        return self._tokenizer.get_vocab_size()
+
+    @property
+    def speaker_vocab_size(self):
+        return self._speaker_tokenizer.get_vocab_size()
+
+    @property
+    def pad_token(self):
+        return self._tokenizer.token_to_id('<PAD>')
+
+    @property
+    def unk_token(self):
+        return self._tokenizer.token_to_id('<UNK>')
+
+    @property
+    def bos_token(self):
+        return self._tokenizer.token_to_id('<BOS>')
+
+    @property
+    def eos_token(self):
+        return self._tokenizer.token_to_id('<EOS>')
