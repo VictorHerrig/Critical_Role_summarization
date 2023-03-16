@@ -121,8 +121,6 @@ class LocalSelfAttention(nn.Module):
         assert list(attn.size()) == [bsz, seq_len, self.num_heads, self.head_dim]
         output_attn = attn.transpose(0, 1).reshape(seq_len, bsz, embed_dim).contiguous()  # (seq_len, batch, embed_dim)
 
-        # TODO: Output context layer? Just the permutation of (batch, n_head, seq_len, windw_size)
-
         return output_attn
 
     @property

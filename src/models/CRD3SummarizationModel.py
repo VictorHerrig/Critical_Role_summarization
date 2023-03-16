@@ -1,4 +1,4 @@
-# TODO: Write
+"""Model that wraps a BottomUpTopDownTransformer for use with CRD3 data."""
 import torch
 from numpy import unravel_index
 from torch import nn, Tensor
@@ -26,13 +26,13 @@ class CRD3SummarizationModel(nn.Module):
             dropout: float = 0.1,
             avg_pool_kernel_size: int = 32,
             avg_pool_stride: int = 24,
-            max_len: int = 10000,
-            max_tgt_seq_len: int = 500,  # TODO: Tune
+            max_len: int = 4000,
+            max_tgt_seq_len: int = 150,
             device: str = None
     ):
         super().__init__()
 
-        assert model_dim > speaker_size  # TODO: Message
+        assert model_dim > speaker_size
 
         self._vocab_size = vocab_size
         self._speaker_size = speaker_size
@@ -42,7 +42,7 @@ class CRD3SummarizationModel(nn.Module):
         self._bos_token_idx = bos_token_idx
         self._eos_token_idx = eos_token_idx
 
-        self._embedding_layer = nn.Embedding(vocab_size, model_dim)  # TODO: Sparse?
+        self._embedding_layer = nn.Embedding(vocab_size, model_dim)
         # The model will get the concatenation of word embeddings and speaker vectors as source representations
         # Speakers will be concatenated to word embeddings and reduced to the model dim via linear layer
         self._encoder_linear = nn.Linear(model_dim + speaker_size, model_dim)
@@ -92,7 +92,7 @@ class CRD3SummarizationModel(nn.Module):
             self,
             src: Tensor,
             speakers: Tensor,
-            src_key_padding_mask: Tensor = None,  # TODO: Why would this be necessary at inference time?
+            src_key_padding_mask: Tensor = None,
             max_tgt_seq_len: int = 500,
             beam_size: int = 8,
             top_k: int = 32,

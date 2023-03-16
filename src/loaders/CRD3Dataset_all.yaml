@@ -10,6 +10,10 @@ n_summary: ''
 # Size of the chunk buffer of the dataset. Large buffers will allow for randomization over more files, but will consume
 # more memory.
 buffer_size: 256
+# Path to text vocab
+tokenizer_path: '../data/tokenizer.json'
+# Path to speaker vocab
+spkr_tokenizer_path: '../data/speaker_tokenizer.json'
 # Maximum length of source sequences
 max_src_seq_len: 10000
 # Maximum length of target (summary) sequences

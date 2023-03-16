@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append('../src/')
 try:
-    from loaders import CRD3Dataset
+    from loaders import CRD3Dataset, CRD3BatchCollator
     from models import Trainer, CRD3SummarizationModel
 except ImportError as e:
     print('Must be run from the scripts/ directory!')
@@ -24,7 +24,11 @@ def main(
 ):
     model_dim = 2048
     train_dataset = CRD3Dataset('../src/loaders/train.yaml')
+    train_collator = CRD3BatchCollator(train_dataset.pad_token)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator)
     val_dataset = CRD3Dataset('../src/loaders/train.yaml')
+    val_collator = CRD3BatchCollator(val_dataset.pad_token)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator)
     total_steps = 100000
     warmup_steps = 8000
 
@@ -35,8 +39,8 @@ def main(
             pad_token_idx=train_dataset.pad_token,
             bos_token_idx=train_dataset.bos_token,
             eos_token_idx=train_dataset.eos_token,
-            max_len=10000,
-            max_tgt_seq_len=500,
+            max_len=4000,  # ~94th percentile
+            max_tgt_seq_len=150,  # ~94th percentile
             device=device)
     optim = Adam(model.parameters())
     writer = SummaryWriter(log_dir=tensorboard_logdir) if tensorboard_logdir is not None else None
@@ -50,16 +54,18 @@ def main(
 
     trainer = Trainer(
         model=model,
-        train_dataloader=DataLoader(train_dataset, batch_size=batch_size),
+        train_dataloader=train_dataloader,
         loss_fn=loss_fn,
         optimizer=optim,
         device=device,
-        val_dataloader=DataLoader(val_dataset, batch_size=batch_size),
+        val_dataloader=val_dataloader,
         scheduler=scheduler,
         writer=writer,
         tokenizer=train_dataset.tokenizer,
         log_level=20
     )
+
+    trainer.train()
 
 
 if __name__ == '__main__':

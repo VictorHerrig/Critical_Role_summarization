@@ -195,7 +195,7 @@ class Trainer:
         if self.scheduler is not None:
             self.scheduler.step()
 
-        # TODO: sample_sentence
+        # TODO: Log sample_sentence
 
         return loss.item()
 
