@@ -123,15 +123,15 @@ class BottomUpEncoderBlock(nn.Module):
         assert num_local_self_attn > 0
         assert num_segment_full_self_attn > 0
 
-        self._local_self_attn_stack = nn.ModuleList([
-            LocalSelfAttentionBlock(model_dim, local_self_attn_window_size, num_attn_heads, dropout)
-            for _ in range(num_local_self_attn)
-        ])
+        self._local_self_attn_stack = nn.ModuleDict({
+            f'local_attention_{i}': LocalSelfAttentionBlock(model_dim, local_self_attn_window_size, num_attn_heads, dropout)
+            for i in range(num_local_self_attn)
+        })
         self._avg_pool = nn.AvgPool1d(kernel_size=avg_pool_kernel_size, stride=avg_pool_stride)
-        self._segment_full_self_attn_stack = nn.ModuleList([
-            FullSelfAttentionBlock(model_dim, num_attn_heads, dropout)
-            for _ in range(num_segment_full_self_attn)
-        ])
+        self._segment_full_self_attn_stack = nn.ModuleDict({
+            f'full_attention_{i}': FullSelfAttentionBlock(model_dim, num_attn_heads, dropout)
+            for i in range(num_segment_full_self_attn)
+        })
 
     def forward(
             self,
@@ -140,13 +140,13 @@ class BottomUpEncoderBlock(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         # Local self-attention on token-level 'bottom-level' representations
         local_attn_intermdeiate = val
-        for block in self._local_self_attn_stack:
+        for block in self._local_self_attn_stack.values():
             local_attn_intermdeiate = block(local_attn_intermdeiate, key_padding_mask=key_padding_mask)
         bottom_lvl_repr = local_attn_intermdeiate
         # Pooling to create initial 'top-level' representations
         top_level_initializations = self._avg_pool(bottom_lvl_repr)
         # Full self-attention on segment-level 'top-level' representations
-        for block in self._segment_full_self_attn_stack:
+        for block in self._segment_full_self_attn_stack.values():
             top_level_initializations = block(top_level_initializations, key_padding_mask=key_padding_mask)
         top_lvl_rep = top_level_initializations
         return bottom_lvl_repr, top_lvl_rep
@@ -166,10 +166,10 @@ class TopDownEncoderBlock(nn.Module):
         super().__init__()
 
         # Can't be sequential since each sublayer output needs to be the argument to all 3 parameters for the next layer
-        self._segment_full_self_attn_stack = nn.ModuleList([
-            TopDownEncoderSubBlock(model_dim, feedforward_dim, local_self_attn_window_size, num_attn_heads, dropout, device)
-            for _ in range(num_top_down_blocks)
-        ])
+        self._segment_full_self_attn_stack = nn.ModuleDict({
+            f'top_down_encoder_block_{i}': TopDownEncoderSubBlock(model_dim, feedforward_dim, local_self_attn_window_size, num_attn_heads, dropout, device)
+            for i in range(num_top_down_blocks)
+        })
 
     def forward(
             self,
@@ -178,7 +178,7 @@ class TopDownEncoderBlock(nn.Module):
             key_padding_mask: Optional[Tensor] = None
     ) -> Tensor:
         top_down_intermediate = val
-        for block in self._segment_full_self_attn_stack:
+        for block in self._segment_full_self_attn_stack.values():
             top_down_intermediate = block(top_down_intermediate, top_level_tokens, key_padding_mask=key_padding_mask)
         final_tokens = top_down_intermediate
 

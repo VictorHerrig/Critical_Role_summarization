@@ -52,7 +52,7 @@ class BottomUpTopDownTransformer(nn.Module):
             dropout=dropout,
             max_len=max_len
         )
-        encoder = BottomUpTopDownEncoder(
+        self._encoder = BottomUpTopDownEncoder(
             model_dim,
             local_self_attn_window_size,
             feedforward_dim,
@@ -68,7 +68,7 @@ class BottomUpTopDownTransformer(nn.Module):
         self._model = nn.Transformer(
             d_model=model_dim,
             nhead=num_attn_heads,
-            custom_encoder=encoder,
+            custom_encoder=self._encoder,
             num_decoder_layers=num_decoder_layers,
             dropout=dropout,
             device=device

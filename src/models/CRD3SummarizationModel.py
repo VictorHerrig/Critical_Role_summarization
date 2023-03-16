@@ -13,6 +13,9 @@ class CRD3SummarizationModel(nn.Module):
             vocab_size: int,
             speaker_size: int,
             model_dim: int,
+            pad_token_idx: int,
+            bos_token_idx: int,
+            eos_token_idx: int,
             num_decoder_layers: int = 12,
             local_self_attn_window_size: int = 1024,
             feedforward_dim: int = 2048,
@@ -35,9 +38,9 @@ class CRD3SummarizationModel(nn.Module):
         self._speaker_size = speaker_size
         self._max_tgt_seq_len = max_tgt_seq_len
 
-        # TODO: pad token idx
-        self._pad_token_idx = 0
-        # TODO: unk token idx for tgt key mask?
+        self._pad_token_idx = pad_token_idx
+        self._bos_token_idx = bos_token_idx
+        self._eos_token_idx = eos_token_idx
 
         self._embedding_layer = nn.Embedding(vocab_size, model_dim)  # TODO: Sparse?
         # The model will get the concatenation of word embeddings and speaker vectors as source representations
@@ -96,6 +99,8 @@ class CRD3SummarizationModel(nn.Module):
             top_p: float = 0.94
     ) -> Tensor:
         with torch.no_grad():
+            # TODO: Add scaled LM score into the beam search.
+            # TODO: Add sequence length regularizer into beam search.
             assert beam_size < self._vocab_size
 
             # Find encoded source representation
@@ -104,11 +109,10 @@ class CRD3SummarizationModel(nn.Module):
             src_input = self._encoder_linear(concat_src)
             src_encoding = self._model.model.encoder(src_input, src_key_padding_mask=src_key_padding_mask)
 
-            # Initialize target as <pad> token
+            # Initialize target as <bos> token
             tgt = torch.zeros((1, 1, self._vocab_size), dtype=torch.float32, device=self.device)  # (1, 1, vocab_size)
-            tgt[..., self._pad_token_idx] = 1
+            tgt[..., self._bos_token_idx] = 1
 
-            # TODO: Proper beam search
             # Generate tokens one-by-one
             eos = False
 
@@ -119,7 +123,6 @@ class CRD3SummarizationModel(nn.Module):
             while not eos and tgt.size(0) < max_tgt_seq_len:
                 # Get output sequences for all beams
                 out_seq = self._model.model.decoder.forward(tgt, src_encoding)  # (seq_len, beam_size, model_size)
-                # TODO: Maybe this ... check later
 
                 # No need to calculate the whole sequence. We will find the marginal prob later
                 last_token = out_seq[-1, ...]  # (beam_size, model_size)
@@ -172,10 +175,11 @@ class CRD3SummarizationModel(nn.Module):
                 new_beam_probs[not_retired_idx] = topk_vals
                 topk_new_beams = torch.argsort(new_beam_probs)[-beam_size:]
 
-                # Assign the new topk beams and retire any that need
+                # TODO: This can 'fail' if the model predicts <pad> ... but that in itself is a type of failure...
+                # Assign the new topk beams and retire any that end in <eos> or <pad>
                 beams = new_beams[topk_new_beams]  # (seq_len + 1, beam_size, vocab_size)
                 beam_probs = new_beam_probs[topk_new_beams]  # (beam_size, )
-                is_retired = beams[-1].argmax(-1) == self._pad_token_idx
+                is_retired = beams[-1].argmax(-1) == self._pad_token_idx or beams[-1].argmax(-1) == self._eos_token_idx
 
                 tgt = beams[~is_retired]
 
