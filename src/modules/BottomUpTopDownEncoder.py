@@ -18,11 +18,12 @@ class FullSelfAttentionBlock(nn.Module):
             model_dim: int,
             num_attn_heads: int = 8,
             dropout: float = 0.1,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
-        self._full_self_attn = nn.MultiheadAttention(model_dim, num_heads=num_attn_heads, dropout=dropout)
-        self._layer_norm = nn.LayerNorm([model_dim, ])
+        self._full_self_attn = nn.MultiheadAttention(model_dim, num_heads=num_attn_heads, dropout=dropout, device=device)
+        self._layer_norm = nn.LayerNorm([model_dim, ], device=device)
+        self.to(device)
 
     def forward(
             self,
@@ -40,14 +41,16 @@ class LocalSelfAttentionBlock(nn.Module):
             local_self_attn_window_size: int = 1024,
             num_attn_heads: int = 8,
             dropout: float = 0.1,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
         self._local_self_attn = LocalSelfAttention(model_dim,
                                                    local_self_attn_window_size,
                                                    num_heads=num_attn_heads,
-                                                   dropout=dropout)
-        self._layer_norm = nn.LayerNorm([model_dim, ])
+                                                   dropout=dropout,
+                                                   device=device)
+        self._layer_norm = nn.LayerNorm([model_dim, ], device=device)
+        self.to(device)
 
     def forward(
             self,
@@ -66,17 +69,19 @@ class TopDownEncoderSubBlock(nn.Module):
             local_self_attn_window_size: int = 1024,
             num_attn_heads: int = 8,
             dropout: float = 0.1,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
-        self._local_self_attn = LocalSelfAttention(model_dim, local_self_attn_window_size, num_attn_heads, dropout)
-        self._full_cross_attn = nn.MultiheadAttention(model_dim, num_heads=num_attn_heads, dropout=dropout)
-        self._layer_norm = nn.LayerNorm([model_dim, ])
+        # TODO: BART initialization
+        self._local_self_attn = LocalSelfAttention(model_dim, local_self_attn_window_size, num_attn_heads, dropout, device=device)
+        self._full_cross_attn = nn.MultiheadAttention(model_dim, num_heads=num_attn_heads, dropout=dropout, device=device)
+        self._layer_norm = nn.LayerNorm([model_dim, ], device=device)
         self._feedforward = nn.Sequential(OrderedDict([
-            ('linear_1', nn.Linear(model_dim, feedforward_dim)),
+            ('linear_1', nn.Linear(model_dim, feedforward_dim, device=device)),
             ('relu', nn.ReLU()),
-            ('linear_2', nn.Linear(feedforward_dim, model_dim))
+            ('linear_2', nn.Linear(feedforward_dim, model_dim, device=device))
         ]))
+        self.to(device)
 
     def forward(
             self,
@@ -116,7 +121,7 @@ class BottomUpEncoderBlock(nn.Module):
             avg_pool_stride: int = 24,
             num_local_self_attn: int = 8,
             num_segment_full_self_attn: int = 2,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
 
@@ -124,14 +129,15 @@ class BottomUpEncoderBlock(nn.Module):
         assert num_segment_full_self_attn > 0
 
         self._local_self_attn_stack = nn.ModuleDict({
-            f'local_attention_{i}': LocalSelfAttentionBlock(model_dim, local_self_attn_window_size, num_attn_heads, dropout)
+            f'local_attention_{i}': LocalSelfAttentionBlock(model_dim, local_self_attn_window_size, num_attn_heads, dropout, device)
             for i in range(num_local_self_attn)
         })
         self._avg_pool = nn.AvgPool1d(kernel_size=avg_pool_kernel_size, stride=avg_pool_stride)
         self._segment_full_self_attn_stack = nn.ModuleDict({
-            f'full_attention_{i}': FullSelfAttentionBlock(model_dim, num_attn_heads, dropout)
+            f'full_attention_{i}': FullSelfAttentionBlock(model_dim, num_attn_heads, dropout, device)
             for i in range(num_segment_full_self_attn)
         })
+        self.to(device)
 
     def forward(
             self,
@@ -161,7 +167,7 @@ class TopDownEncoderBlock(nn.Module):
             num_attn_heads: int = 8,
             dropout: float = 0.1,
             num_top_down_blocks: int = 4,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
 
@@ -170,6 +176,7 @@ class TopDownEncoderBlock(nn.Module):
             f'top_down_encoder_block_{i}': TopDownEncoderSubBlock(model_dim, feedforward_dim, local_self_attn_window_size, num_attn_heads, dropout, device)
             for i in range(num_top_down_blocks)
         })
+        self.to(device)
 
     def forward(
             self,
@@ -203,7 +210,7 @@ class BottomUpTopDownEncoder(nn.Module):
             dropout: float = 0.1,
             avg_pool_kernel_size: int = 32,
             avg_pool_stride: int = 24,
-            device: str = None
+            device: str = 'cpu'
     ):
         super().__init__()
         self._bottom_up_encoder = BottomUpEncoderBlock(
@@ -226,6 +233,7 @@ class BottomUpTopDownEncoder(nn.Module):
             num_top_down_blocks,
             device
         )
+        self.to(device)
 
     def forward(
             self,

@@ -22,25 +22,29 @@ def main(
         batch_size: Optional[int] = 8,
         tensorboard_logdir: Optional[str] = None
 ):
-    model_dim = 2048
+    # TODO: Parameterize
+    model_dim = 512
+    window_size = 256
+    total_steps = 100000
+    warmup_steps = 8000
+    grad_norm = 5.
     train_dataset = CRD3Dataset('../src/loaders/train.yaml')
     train_collator = CRD3BatchCollator(train_dataset.pad_token)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator)
     val_dataset = CRD3Dataset('../src/loaders/train.yaml')
     val_collator = CRD3BatchCollator(val_dataset.pad_token)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator)
-    total_steps = 100000
-    warmup_steps = 8000
 
     model = CRD3SummarizationModel(
             vocab_size=train_dataset.vocab_size,
             speaker_size=train_dataset.speaker_vocab_size,
             model_dim=model_dim,
+            local_self_attn_window_size=window_size,
             pad_token_idx=train_dataset.pad_token,
             bos_token_idx=train_dataset.bos_token,
             eos_token_idx=train_dataset.eos_token,
-            max_len=4000,  # ~94th percentile
-            max_tgt_seq_len=150,  # ~94th percentile
+            max_len=5000,
+            max_tgt_seq_len=200,
             device=device)
     optim = Adam(model.parameters())
     writer = SummaryWriter(log_dir=tensorboard_logdir) if tensorboard_logdir is not None else None
@@ -65,7 +69,12 @@ def main(
         log_level=20
     )
 
-    trainer.train()
+    trainer.train(
+        n_step=total_steps,
+        val_every=1000,
+        n_val=10,
+        grad_norm=grad_norm
+    )
 
 
 if __name__ == '__main__':

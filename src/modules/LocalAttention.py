@@ -20,7 +20,7 @@ class LocalSelfAttention(nn.Module):
             num_heads: int = 8,
             dropout: float = 0.1,
             autoregressive: bool = True,
-            device: str = None
+            device: str = 'cpu'
     ):
         """
 
@@ -49,15 +49,16 @@ class LocalSelfAttention(nn.Module):
         self._num_heads = num_heads
         self._embed_dim = hidden_size
 
-        self._query = nn.Linear(hidden_size, hidden_size)
-        self._key = nn.Linear(hidden_size, hidden_size)
-        self._value = nn.Linear(hidden_size, hidden_size)
+        self._query = nn.Linear(hidden_size, hidden_size, device=device)
+        self._key = nn.Linear(hidden_size, hidden_size, device=device)
+        self._value = nn.Linear(hidden_size, hidden_size, device=device)
         self._softmax = nn.Softmax(hidden_size)
 
         self._autoregressive = autoregressive
         assert self._window > 0
 
         self._dropout = dropout
+        self.to(device)
 
     def forward(
             self,

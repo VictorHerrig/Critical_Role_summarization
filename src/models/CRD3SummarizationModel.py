@@ -42,10 +42,10 @@ class CRD3SummarizationModel(nn.Module):
         self._bos_token_idx = bos_token_idx
         self._eos_token_idx = eos_token_idx
 
-        self._embedding_layer = nn.Embedding(vocab_size, model_dim)
+        self._embedding_layer = nn.Embedding(vocab_size, model_dim, device=device)
         # The model will get the concatenation of word embeddings and speaker vectors as source representations
         # Speakers will be concatenated to word embeddings and reduced to the model dim via linear layer
-        self._encoder_linear = nn.Linear(model_dim + speaker_size, model_dim)
+        self._encoder_linear = nn.Linear(model_dim + speaker_size, model_dim, device=device)
         self._model = BottomUpTopDownTransformer(
             model_dim,
             num_decoder_layers,
@@ -61,7 +61,7 @@ class CRD3SummarizationModel(nn.Module):
             max_len,
             device
         )
-        self._decoder_linear = nn.Linear(model_dim, vocab_size)
+        self._decoder_linear = nn.Linear(model_dim, vocab_size, device=device)
         self._decoder_smax = nn.Softmax(vocab_size)
         self._device = device
 

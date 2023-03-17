@@ -107,20 +107,14 @@ class CRD3Dataset(IterableDataset):
         -------
         source: torch.Tensor
             One-hot token encoding of turn_strings of dimension (src_seq_len, vocab_size).
-        speakers: torch.Tensor
-            Multi-hot speaker encoding of dimension (src_seq_len, speaker_vocab_size + vocab_size).
-        targets: torch.Tensor
+        speaker: torch.Tensor
+            Multi-hot speaker encoding of dimension (src_seq_len, speaker_vocab_size).
+        target: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
-        src_key_padding_mask: torch.Tensor
-            Padding mask tensor of same shape dimension 0 of source.
-        tgt_key_padding_mask: torch.Tensor
-            Padding mask tensor of same shape dimension 0 of target.
         """
         # Tokenize and one-hot summary strings
         target_idxs = self.tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len - 2]  # -2 for <EOS> and <BOS>
         target: torch.Tensor = one_hot(target_idxs, num_classes=self.vocab_size).to(torch.float32)
-        # targets.requires_grad = True
-        # TODO: Decide where to set requires_grad
 
         # Create multi-hot speaker encoding
         src_chunk_data = []
@@ -134,7 +128,6 @@ class CRD3Dataset(IterableDataset):
                 turn_idxs = turn_idxs[:self.max_src_seq_len - chunk_len]
             chunk_len += len(turn_idxs)
             turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=self.vocab_size).to(torch.float32)
-            # turn_data.requires_grad = True
             src_chunk_data.append(turn_data)
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
@@ -142,7 +135,6 @@ class CRD3Dataset(IterableDataset):
             speaker_data: torch.Tensor = torch.zeros(self.speaker_vocab_size, dtype=torch.float32)
             speaker_data[speaker_idxs] = 1.
             speaker_data = speaker_data.repeat(turn_data.size(0))
-            # speaker_data.requires_grad = True
             speaker_chunk_data.append(speaker_data)
 
             # Only read up to the max chunk length
@@ -152,29 +144,7 @@ class CRD3Dataset(IterableDataset):
         # Concat all chunk data to make source and speaker tensors
         source = torch.stack(src_chunk_data, dim=0)
         speaker = torch.stack(speaker_chunk_data, dim=0)
-        #
-        # # Calculate padding masks
-        # src_key_padding_mask = torch.arange(self.max_src_seq_len) > source.size(0)  # (max_src_seq_len, vocab_size)
-        # tgt_key_padding_mask = torch.arange(self.max_tgt_seq_len) > target.size(0)  # (max_tgt_seq_len, vocab_size)
-        #
-        # # Add padding to the source and target. Add <bos> and <eos> to target. Add zeros to the speaker.
-        # src_pad_amt = self.max_src_seq_len - source.size(0)
-        # tgt_pad_amt = self.max_tgt_seq_len - target.size(0) - 2  # -s for <EOS> and <BOS>
-        # src_pad_data = torch.zeros((src_pad_amt, self.vocab_size), dtype=torch.float32)  # (src_pad_amt, vocab_size)
-        # src_pad_data[:, self.pad_token] = 1.
-        # speaker_pad_data = torch.zeros((src_pad_amt, self.speaker_vocab_size), dtype=torch.float32)  # (src_pad_amt, speaker_vocab_size)
-        # tgt_bos_data = torch.zeros((1, self.vocab_size), dtype=torch.float32)  # (1, vocab_size)
-        # tgt_bos_data[:, self.bos_token] = 1.
-        # tgt_eos_data = torch.zeros((1, self.vocab_size), dtype=torch.float32)  # (1, vocab_size)
-        # tgt_eos_data[:, self.eos_token] = 1.
-        # tgt_pad_data = torch.zeros((tgt_pad_amt, self.vocab_size), dtype=torch.float32)  # (tgt_pad_amt, vocab_size)
-        # tgt_pad_data[:, self.pad_token] = 1.
-        #
-        # source = torch.concat((source, src_pad_data), dim=0)  # (max_src_seq_len, vocab_size)
-        # speaker = torch.concat((speaker, speaker_pad_data), dim=0)  # (max_src_seq_len, speaker_vocab_size)
-        # target = torch.concat((tgt_bos_data, target, tgt_eos_data, tgt_pad_data), dim=0)  # (max_tgt_seq_len, vocab_size)
 
-        # return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
         return source, speaker, target
 
     def iter_chunk(
