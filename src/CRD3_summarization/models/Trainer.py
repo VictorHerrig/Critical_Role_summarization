@@ -14,7 +14,6 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-
 logging.basicConfig()
 logger = logging.Logger(__name__)
 

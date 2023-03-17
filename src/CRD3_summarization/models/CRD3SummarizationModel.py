@@ -2,7 +2,6 @@
 import torch
 from numpy import unravel_index
 from torch import nn, Tensor
-from torch.nn import functional as F
 
 from ..modules.BottomUpTopDownTransformer import BottomUpTopDownTransformer
 

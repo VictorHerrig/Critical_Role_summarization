@@ -4,14 +4,13 @@ from os import listdir, path
 from typing import Iterator, Optional
 
 import numpy as np
-import pandas as pd
+import pandas as pd  # TODO: Replace with own function to remove requirement
 import torch
 import yaml
 from numpy import ceil
+from tokenizers import Tokenizer
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
-
-from tokenizers import Tokenizer
 
 
 class CRD3Dataset(IterableDataset):
@@ -114,7 +113,7 @@ class CRD3Dataset(IterableDataset):
         """
         # Tokenize and one-hot summary strings
         target_idxs = self.tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len - 2]  # -2 for <EOS> and <BOS>
-        target: torch.Tensor = one_hot(target_idxs, num_classes=self.vocab_size).to(torch.float32)
+        target: torch.Tensor = one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.float32)
 
         # Create multi-hot speaker encoding
         src_chunk_data = []
@@ -127,23 +126,23 @@ class CRD3Dataset(IterableDataset):
             if len(turn_idxs) + chunk_len > self.max_src_seq_len:
                 turn_idxs = turn_idxs[:self.max_src_seq_len - chunk_len]
             chunk_len += len(turn_idxs)
-            turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=self.vocab_size).to(torch.float32)
+            turn_data: torch.Tensor = one_hot(torch.tensor(turn_idxs), num_classes=self.vocab_size).to(torch.float32)
             src_chunk_data.append(turn_data)
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
-            speaker_idxs = self.tokenizer.encode(turn_speaker_str).ids
+            speaker_idxs = self.speaker_tokenizer.encode(turn_speaker_str).ids
             speaker_data: torch.Tensor = torch.zeros(self.speaker_vocab_size, dtype=torch.float32)
             speaker_data[speaker_idxs] = 1.
-            speaker_data = speaker_data.repeat(turn_data.size(0))
+            speaker_data = speaker_data.repeat((turn_data.size(0), 1))
             speaker_chunk_data.append(speaker_data)
 
             # Only read up to the max chunk length
-            if chunk_len == self.max_src_seq_len:
+            if chunk_len >= self.max_src_seq_len:
                 break
 
         # Concat all chunk data to make source and speaker tensors
-        source = torch.stack(src_chunk_data, dim=0)
-        speaker = torch.stack(speaker_chunk_data, dim=0)
+        source = torch.concat(src_chunk_data, dim=0)
+        speaker = torch.concat(speaker_chunk_data, dim=0)
 
         return source, speaker, target
 
@@ -277,6 +276,10 @@ class CRD3Dataset(IterableDataset):
         return self._tokenizer
 
     @property
+    def speaker_tokenizer(self):
+        return self._speaker_tokenizer
+
+    @property
     def vocab_size(self):
         return self.tokenizer.get_vocab_size()
 
@@ -327,17 +330,18 @@ class CRD3BatchCollator:
         else:
             padding_mask = None
 
-        # Append padding one-hot vectors
-        for i, t in enumerate(inputs):
+        output = list(inputs)
 
+        # Append padding one-hot vectors
+        for i, t in enumerate(output):
             pad_amt = max_len - t.size(0)
             if pad_amt > 0:
                 padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
                 padding[:, self.pad_token_idx] = 1.
-                inputs[i] = torch.concat((t, padding), dim=0)
+                output[i] = torch.concat((t, padding), dim=0)
 
         # Create a batch axis at axis 1
-        return torch.stack(inputs, dim=1), padding_mask
+        return torch.stack(output, dim=1), padding_mask
 
     @staticmethod
     def add_speaker_padding(inputs: list[torch.Tensor]) -> torch.Tensor:
@@ -348,6 +352,7 @@ class CRD3BatchCollator:
         # Fill with all zeros
         for i, t in enumerate(inputs):
             pad_amt = max_len - t.size(0)
+            print(max_len, t.size(), pad_amt, vocab_size)
             if pad_amt > 0:
                 padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
                 inputs[i] = torch.concat((t, padding), dim=0)

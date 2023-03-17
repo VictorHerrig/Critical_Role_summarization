@@ -6,8 +6,8 @@ import math
 from typing import Optional
 
 import torch
-from torch.nn import functional as F, Tensor
-from torch import nn
+from torch import nn, Tensor
+from torch.nn import functional as F
 
 from .DiagonaledMM import diagonaled_mm, mask_invalid_locations
 
@@ -55,7 +55,7 @@ class LocalSelfAttention(nn.Module):
         self._softmax = nn.Softmax(hidden_size)
 
         self._autoregressive = autoregressive
-        assert self._window > 0
+        assert self._window_size > 0
 
         self._dropout = dropout
         self.to(device)
