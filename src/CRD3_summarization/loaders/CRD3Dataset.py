@@ -113,7 +113,11 @@ class CRD3Dataset(IterableDataset):
         """
         # Tokenize and one-hot summary strings
         target_idxs = self.tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len - 2]  # -2 for <EOS> and <BOS>
-        target: torch.Tensor = one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.float32)
+        target = torch.concat((
+            one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.float32),  # <BOS>
+            one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.float32),  # summary
+            one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.float32)  # <EOS>
+        ))
 
         # Create multi-hot speaker encoding
         src_chunk_data = []
@@ -326,7 +330,7 @@ class CRD3BatchCollator:
 
         if any([max_len - t.size(0) > 0 for t in inputs]):
             # Create padding masks
-            padding_mask = torch.stack([(torch.arange(max_len) > t.size(0)).to(torch.float32) for t in inputs], dim=1)
+            padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.float32) for t in inputs], dim=1)
         else:
             padding_mask = None
 
@@ -349,13 +353,14 @@ class CRD3BatchCollator:
         max_len = max([t.size(0) for t in inputs])
         vocab_size = inputs[0].size(-1)
 
+        output = list(inputs)
+
         # Fill with all zeros
-        for i, t in enumerate(inputs):
+        for i, t in enumerate(output):
             pad_amt = max_len - t.size(0)
-            print(max_len, t.size(), pad_amt, vocab_size)
             if pad_amt > 0:
                 padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
-                inputs[i] = torch.concat((t, padding), dim=0)
+                output[i] = torch.concat((t, padding), dim=0)
 
         # Create a batch axis at axis 1
-        return torch.stack(inputs, dim=1)
+        return torch.stack(output, dim=1)

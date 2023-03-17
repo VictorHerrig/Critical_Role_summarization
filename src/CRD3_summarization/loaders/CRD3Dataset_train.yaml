@@ -17,6 +17,6 @@ tokenizer_path: '../data/tokenizer.json'
 # Path to speaker vocab
 spkr_tokenizer_path: '../data/speaker_tokenizer.json'
 # Maximum length of source sequences
-max_src_seq_len: 10000
+max_src_seq_len: 5000
 # Maximum length of target (summary) sequences
-max_tgt_seq_len: 500
+max_tgt_seq_len: 200
