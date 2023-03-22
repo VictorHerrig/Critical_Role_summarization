@@ -52,6 +52,7 @@ class LocalSelfAttentionBlock(nn.Module):
                                                    num_heads=num_attn_heads,
                                                    dropout=dropout,
                                                    device=device)
+
         self._layer_norm = nn.LayerNorm([model_dim, ], device=device)
         self.to(device)
 
@@ -76,16 +77,16 @@ class TopDownEncoderSubBlock(nn.Module):
             device: str = 'cpu'
     ):
         super().__init__()
-        # TODO: BART initialization
         self._n_heads = num_attn_heads
         self._local_self_attn = LocalSelfAttention(model_dim, local_self_attn_window_size, num_attn_heads, dropout, device=device)
         self._full_cross_attn = nn.MultiheadAttention(model_dim, num_heads=num_attn_heads, dropout=dropout, device=device)
         self._layer_norm = nn.LayerNorm([model_dim, ], device=device)
         self._feedforward = nn.Sequential(OrderedDict([
             ('linear_1', nn.Linear(model_dim, feedforward_dim, device=device)),
-            ('relu', nn.ReLU()),
+            ('relu', nn.ReLU()),  # TODO: GeLU?
             ('linear_2', nn.Linear(feedforward_dim, model_dim, device=device))
         ]))
+        self._final_layer_norm = nn.LayerNorm([model_dim, ], device=device)
         self.to(device)
 
     def forward(
@@ -123,7 +124,7 @@ class TopDownEncoderSubBlock(nn.Module):
         # silly, so I've added them in the other blocks for the time being anyway. Perhaps I will add a toggle parameter
         # in future.
         cross_attn_layer_norm = token_self_attn + self._layer_norm(token_segment_cross_attn)
-        output = self._feedforward(cross_attn_layer_norm)
+        output = self._final_layer_norm(self._feedforward(cross_attn_layer_norm))
 
         return output
 
@@ -203,7 +204,7 @@ class TopDownEncoderBlock(nn.Module):
         super().__init__()
 
         # Can't be sequential since each sublayer output needs to be the argument to all 3 parameters for the next layer
-        self._segment_full_self_attn_stack = nn.ModuleDict({
+        self._top_down_subblocks = nn.ModuleDict({
             f'top_down_encoder_block_{i}': TopDownEncoderSubBlock(model_dim, feedforward_dim, local_self_attn_window_size, num_attn_heads, dropout, device)
             for i in range(num_top_down_blocks)
         })
@@ -217,7 +218,7 @@ class TopDownEncoderBlock(nn.Module):
             top_lvl_key_mask: Optional[Tensor] = None
     ) -> Tensor:
         top_down_intermediate = val
-        for block in self._segment_full_self_attn_stack.values():
+        for block in self._top_down_subblocks.values():
             top_down_intermediate = block(top_down_intermediate, top_level_tokens, key_padding_mask=key_padding_mask, top_lvl_key_mask=top_lvl_key_mask)
         final_tokens = top_down_intermediate
 
@@ -235,9 +236,9 @@ class BottomUpTopDownEncoder(nn.Module):
             model_dim: int,
             local_self_attn_window_size: int = 1024,
             feedforward_dim: int = 2048,
-            num_local_self_attn: int = 8,
-            num_segment_full_self_attn: int = 2,
-            num_top_down_blocks: int = 4,
+            num_local_self_attn: int = 8,  # 4
+            num_segment_full_self_attn: int = 2,  # 2
+            num_top_down_blocks: int = 4,  # 2
             num_attn_heads: int = 8,
             dropout: float = 0.1,
             avg_pool_kernel_size: int = 32,
@@ -245,6 +246,8 @@ class BottomUpTopDownEncoder(nn.Module):
             device: str = 'cpu'
     ):
         super().__init__()
+        self._num_local_self_attn = num_local_self_attn
+        self._num_top_down_blocks = num_top_down_blocks
         self._bottom_up_encoder = BottomUpEncoderBlock(
             model_dim,
             local_self_attn_window_size,
@@ -276,3 +279,44 @@ class BottomUpTopDownEncoder(nn.Module):
         bottom_lvl_repr, top_lvl_repr, top_lvl_key_mask = self._bottom_up_encoder(val, key_padding_mask=src_key_padding_mask)
         final_token_repr = self._top_down_encoder(bottom_lvl_repr, top_lvl_repr, key_padding_mask=src_key_padding_mask, top_lvl_key_mask=top_lvl_key_mask)
         return final_token_repr
+
+    def initialize_from_bart(self, bart_model: dict[str, Tensor]):
+        encoder_base = 'encoder.layers'
+
+        # Initialize bottom-up blocks
+        for i in range(self._num_local_self_attn):
+            # Initialize self-attention
+            bart_layer = f'{encoder_base}.{i}.self_attn'
+            encoder_layer = self._bottom_up_encoder._local_self_attn_stack[f'local_attention_{i}']
+
+            encoder_layer._local_self_attn._query.weight = nn.Parameter(bart_model[f'{bart_layer}.q_proj.weight'])
+            encoder_layer._local_self_attn._query.bias = nn.Parameter(bart_model[f'{bart_layer}.q_proj.bias'])
+            encoder_layer._local_self_attn._value.weight = nn.Parameter(bart_model[f'{bart_layer}.v_proj.weight'])
+            encoder_layer._local_self_attn._value.bias = nn.Parameter(bart_model[f'{bart_layer}.v_proj.bias'])
+            encoder_layer._local_self_attn._key.weight = nn.Parameter(bart_model[f'{bart_layer}.k_proj.weight'])
+            encoder_layer._local_self_attn._key.bias = nn.Parameter(bart_model[f'{bart_layer}.k_proj.bias'])
+            encoder_layer._layer_norm.weight = nn.Parameter(bart_model[f'{bart_layer}_layer_norm.weight'])
+            encoder_layer._layer_norm.bias = nn.Parameter(bart_model[f'{bart_layer}_layer_norm.bias'])
+
+        # Initialize top-down blocks
+        for i in range(self._num_local_self_attn, self._num_local_self_attn + self._num_top_down_blocks):
+            # Initialize self-attention
+            bart_layer = f'{encoder_base}.{i}.self_attn'
+            encoder_layer = self._top_down_encoder._top_down_subblocks[f'top_down_encoder_block_{i - self._num_local_self_attn}']
+
+            encoder_layer._local_self_attn._query.weight = nn.Parameter(bart_model[f'{bart_layer}.q_proj.weight'])
+            encoder_layer._local_self_attn._query.bias = nn.Parameter(bart_model[f'{bart_layer}.q_proj.bias'])
+            encoder_layer._local_self_attn._value.weight = nn.Parameter(bart_model[f'{bart_layer}.v_proj.weight'])
+            encoder_layer._local_self_attn._value.bias = nn.Parameter(bart_model[f'{bart_layer}.v_proj.bias'])
+            encoder_layer._local_self_attn._key.weight = nn.Parameter(bart_model[f'{bart_layer}.k_proj.weight'])
+            encoder_layer._local_self_attn._key.bias = nn.Parameter(bart_model[f'{bart_layer}.k_proj.bias'])
+            encoder_layer._layer_norm.weight = nn.Parameter(bart_model[f'{bart_layer}_layer_norm.weight'])
+            encoder_layer._layer_norm.bias = nn.Parameter(bart_model[f'{bart_layer}_layer_norm.bias'])
+
+            # Initialize feed-forward
+            encoder_layer._feedforward[0].weight = nn.Parameter(bart_model[f'{encoder_base}.{i}.fc1.weight'])
+            encoder_layer._feedforward[0].bias = nn.Parameter(bart_model[f'{encoder_base}.{i}.fc1.bias'])
+            encoder_layer._feedforward[2].weight = nn.Parameter(bart_model[f'{encoder_base}.{i}.fc2.weight'])
+            encoder_layer._feedforward[2].bias = nn.Parameter(bart_model[f'{encoder_base}.{i}.fc2.bias'])
+            encoder_layer._final_layer_norm.weight = nn.Parameter(bart_model[f'{encoder_base}.{i}.final_layer_norm.weight'])
+            encoder_layer._final_layer_norm.bias = nn.Parameter(bart_model[f'{encoder_base}.{i}.final_layer_norm.bias'])

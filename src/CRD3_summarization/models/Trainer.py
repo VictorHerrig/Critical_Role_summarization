@@ -19,6 +19,7 @@ logger = logging.Logger(__name__)
 
 
 # TODO: Deal with parameter redundancy/overriding
+# TODO: Continue from ...
 class Trainer:
     def __init__(
             self,
@@ -84,7 +85,8 @@ class Trainer:
             val_every: Optional[int] = None,
             n_val: Optional[int] = None,
             continue_from: Optional[int] = None,
-            grad_norm: Optional[float] = None
+            grad_norm: Optional[float] = None,
+            grad_every: Optional[int] = 16
     ) -> None:
         """Trains the model for a specified number of steps or epochs.
 
@@ -107,6 +109,8 @@ class Trainer:
 
         # step: int = 0 if continue_from is None else continue_from
         step: int = continue_from or 0
+        grad_step = continue_from or 0
+        grad_step_loss = 0
         epoch: int = 0
         while epoch < n_epoch if n_epoch is not None else True:
             epoch_loss = 0.
@@ -124,28 +128,45 @@ class Trainer:
                 src_mask = src_mask.to(self.device) if src_mask is not None else None
                 tgt_mask = tgt_mask.to(self.device) if tgt_mask is not None else None
                 step_loss = self._train_step(source, speaker, targets, src_mask, tgt_mask, grad_norm)
+                grad_step_loss += step_loss
                 epoch_loss += step_loss
 
-                # Log train loss
-                logger.info(f'Step {step} - Train loss : {step_loss}')
-                if self.writer is not None:
-                    self.writer.add_scalar('Train loss', step_loss, global_step=step)
+                if step % grad_every == 0:
+                    grad_step += 1
+                    # TODO: Fix illegal memory access
+                    if grad_norm is not None:
+                        nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
 
-                # Run a validation is necessary
-                if step % val_every == 0:
-                    val_loss: float = self._validate(n_val)
-                    # Log val loss in tensorboard
-                    logger.info(f'Step {step} - Validation loss : {val_loss}')
+                    # TODO: Log gradients
+
+                    self._optim.step()
+
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+
+                    # TODO: Log sample_sentence
+
+                    # Log train loss
+                    logger.info(f'Step {grad_step} - Train loss : {grad_step_loss}')
                     if self.writer is not None:
-                        self.writer.add_scalar('Validation loss', val_loss, global_step=step)
-                    self._model.train()
+                        self.writer.add_scalar('Train loss', grad_step_loss, global_step=grad_step)
 
-                # Save the model if necessary
-                if step % self.save_every == 0:
-                    filename = f'{self.model_name}_step-{step}.pth'
-                    filepath = os.path.join(self.checkpoint_path, filename)
-                    torch.save(self._model.state_dict(), filepath)
-                    logger.info(f'Step {step} - Checkpoint Saved to {filepath}')
+                    # Run a validation is necessary
+                    if grad_step % val_every == 0:
+                        val_loss: float = self._validate(n_val)
+                        # Log val loss in tensorboard
+                        logger.info(f'Step {grad_step} - Validation loss : {val_loss}')
+                        if self.writer is not None:
+                            self.writer.add_scalar('Validation loss', val_loss, global_step=grad_step)
+                        self._model.train()
+
+                    # Save the model if necessary
+                    if grad_step % self.save_every == 0:
+                        filename = f'{self.model_name}_step-{grad_step}.pth'
+                        filepath = os.path.join(self.checkpoint_path, filename)
+                        torch.save(self._model.state_dict(), filepath)
+                        logger.info(f'Step {grad_step} - Checkpoint Saved to {filepath}')
+                    grad_step_loss = 0
 
             epoch += 1
             logger.warning(f'Epoch {epoch} - Train loss: {epoch_loss / float(step - epoch_start_step):.2f}')
@@ -184,18 +205,18 @@ class Trainer:
         loss: Tensor = self._loss_fn(output.view(-1, output.size(-1)), targets.view(-1, targets.size(-1)))
         loss.backward()
 
-        # TODO: Fix illegal memory access
-        if grad_norm is not None:
-            nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
-
-        # TODO: Log gradients
-
-        self._optim.step()
-
-        if self.scheduler is not None:
-            self.scheduler.step()
-
-        # TODO: Log sample_sentence
+        # # TODO: Fix illegal memory access
+        # if grad_norm is not None:
+        #     nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
+        #
+        # # TODO: Log gradients
+        #
+        # self._optim.step()
+        #
+        # if self.scheduler is not None:
+        #     self.scheduler.step()
+        #
+        # # TODO: Log sample_sentence
 
         return loss.item()
 
@@ -215,11 +236,11 @@ class Trainer:
                 source = source.to(self.device)
                 speaker = speaker.to(self.device)
                 targets = targets.to(self.device)
-                src_mask = src_mask.to(self.device)
-                tgt_mask = tgt_mask.to(self.device)
+                src_mask = src_mask.to(self.device) if src_mask is not None else None
+                tgt_mask = tgt_mask.to(self.device) if tgt_mask is not None else None
 
                 output = self._model.forward(source, speaker, targets, src_mask, tgt_mask)
-                loss += self._loss_fn(output.view(-1, output.size(-1)))
+                loss += self._loss_fn(output.view(-1, output.size(-1)), targets.view(-1, targets.size(-1)))
 
         return loss / float(n_batches)
 

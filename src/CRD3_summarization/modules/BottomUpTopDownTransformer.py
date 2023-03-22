@@ -44,7 +44,8 @@ class BottomUpTopDownTransformer(nn.Module):
             avg_pool_kernel_size: int = 32,
             avg_pool_stride: int = 24,
             max_len: int = 4000,
-            device: str = None
+            device: str = None,
+            initialize_from_bart: str = None
     ):
         super().__init__()
         self._pos_encoding = PositionalEncoding(
@@ -65,14 +66,76 @@ class BottomUpTopDownTransformer(nn.Module):
             avg_pool_stride,
             device
         )
-        self._model = nn.Transformer(
-            d_model=model_dim,
-            nhead=num_attn_heads,
-            custom_encoder=self._encoder,
-            num_decoder_layers=num_decoder_layers,
-            dropout=dropout,
-            device=device
-        )
+        if initialize_from_bart is not None and len(initialize_from_bart) > 1:
+            bart_model = torch.load(initialize_from_bart, map_location='cpu')['model']
+            self._encoder.initialize_from_bart(bart_model)
+            decoder = nn.TransformerDecoder(nn.TransformerDecoderLayer(model_dim, num_attn_heads, feedforward_dim), num_decoder_layers)
+
+            # Initialize decoder weights
+            for i in range(num_decoder_layers):
+                bart_layer = f'decoder.layers.{i}'
+
+                # Initialize self-attention weight
+                decoder.layers[i].self_attn.in_proj_weight = nn.Parameter(torch.concat((
+                    bart_model[f'{bart_layer}.self_attn.q_proj.weight'],
+                    bart_model[f'{bart_layer}.self_attn.k_proj.weight'],
+                    bart_model[f'{bart_layer}.self_attn.v_proj.weight']
+                ), dim=0))
+                decoder.layers[i].self_attn.in_proj_bias = nn.Parameter(torch.concat((
+                    bart_model[f'{bart_layer}.self_attn.q_proj.bias'],
+                    bart_model[f'{bart_layer}.self_attn.k_proj.bias'],
+                    bart_model[f'{bart_layer}.self_attn.v_proj.bias']
+                ), dim=0))
+                decoder.layers[i].self_attn.out_proj.weight = nn.Parameter(bart_model[f'{bart_layer}.self_attn.out_proj.weight'])
+                decoder.layers[i].self_attn.out_proj.bias = nn.Parameter(bart_model[f'{bart_layer}.self_attn.out_proj.bias'])
+                decoder.layers[i].norm1.weight = nn.Parameter(bart_model[f'{bart_layer}.self_attn_layer_norm.weight'])
+                decoder.layers[i].norm1.bias = nn.Parameter(bart_model[f'{bart_layer}.self_attn_layer_norm.bias'])
+
+                # Initialize cross-attention weight
+                decoder.layers[i].multihead_attn.in_proj_weight = nn.Parameter(torch.concat((
+                    bart_model[f'{bart_layer}.encoder_attn.q_proj.weight'],
+                    bart_model[f'{bart_layer}.encoder_attn.k_proj.weight'],
+                    bart_model[f'{bart_layer}.encoder_attn.v_proj.weight']
+                ), dim=0))
+                decoder.layers[i].multihead_attn.in_proj_bias = nn.Parameter(torch.concat((
+                    bart_model[f'{bart_layer}.encoder_attn.q_proj.bias'],
+                    bart_model[f'{bart_layer}.encoder_attn.k_proj.bias'],
+                    bart_model[f'{bart_layer}.encoder_attn.v_proj.bias']
+                ), dim=0))
+                decoder.layers[i].multihead_attn.out_proj.weight = nn.Parameter(bart_model[f'{bart_layer}.encoder_attn.out_proj.weight'])
+                decoder.layers[i].multihead_attn.out_proj.bias = nn.Parameter(bart_model[f'{bart_layer}.encoder_attn.out_proj.bias'])
+                decoder.layers[i].norm2.weight = nn.Parameter(bart_model[f'{bart_layer}.encoder_attn_layer_norm.weight'])
+                decoder.layers[i].norm2.bias = nn.Parameter(bart_model[f'{bart_layer}.encoder_attn_layer_norm.bias'])
+
+                # Initialize feed-forward weight
+                decoder.layers[i].linear1.weight = nn.Parameter(bart_model[f'{bart_layer}.fc1.weight'])
+                decoder.layers[i].linear1.bias = nn.Parameter(bart_model[f'{bart_layer}.fc1.bias'])
+                decoder.layers[i].linear2.weight = nn.Parameter(bart_model[f'{bart_layer}.fc2.weight'])
+                decoder.layers[i].linear2.bias = nn.Parameter(bart_model[f'{bart_layer}.fc2.bias'])
+                decoder.layers[i].norm3.weight = nn.Parameter(bart_model[f'{bart_layer}.final_layer_norm.weight'])
+                decoder.layers[i].norm3.bias = nn.Parameter(bart_model[f'{bart_layer}.final_layer_norm.bias'])
+
+            # Get rid of the bart model after initialization
+            del bart_model
+
+            self._model = nn.Transformer(
+                d_model=model_dim,
+                nhead=num_attn_heads,
+                custom_encoder=self._encoder,
+                custom_decoder=decoder,
+                dropout=dropout,
+                device=device
+            )
+
+        else:
+            self._model = nn.Transformer(
+                d_model=model_dim,
+                nhead=num_attn_heads,
+                custom_encoder=self._encoder,
+                num_decoder_layers=num_decoder_layers,
+                dropout=dropout,
+                device=device
+            )
 
     def forward(
             self,
@@ -84,6 +147,7 @@ class BottomUpTopDownTransformer(nn.Module):
     ) -> Tensor:
         return self.model.forward(self._pos_encoding(src), self._pos_encoding(tgt), tgt_mask=tgt_mask,
                                   src_key_padding_mask=src_key_padding_mask, tgt_key_padding_mask=tgt_key_padding_mask)
+
 
     @staticmethod
     def generate_square_subsequent_mask(sz, device='cpu'):

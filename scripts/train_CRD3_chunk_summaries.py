@@ -12,15 +12,6 @@ from CRD3_summarization.loaders.CRD3Dataset import CRD3Dataset, CRD3BatchCollato
 from CRD3_summarization.models.Trainer import Trainer
 from CRD3_summarization.models.CRD3SummarizationModel import CRD3SummarizationModel
 
-# sys.path.append('../src/CRD3_summarization')
-# try:
-#     from loaders.CRD3Dataset import CRD3Dataset, CRD3BatchCollator
-#     from models.Trainer import Trainer
-#     from models.CRD3SummarizationModel import CRD3SummarizationModel
-# except ImportError as e:
-#     print('Must be run from the scripts/ directory!')
-#     raise e
-
 
 def main(
         device: Optional[str] = 'cpu',
@@ -28,33 +19,50 @@ def main(
         tensorboard_logdir: Optional[str] = None
 ):
     # TODO: Parameterize
-    model_dim = 512
+    # Use BART base size
+    model_dim = 768  #  512
+    feedforward_dim = 3072
+    num_local_self_attn = 4
+    num_segment_full_self_attn = 2
+    num_top_down_blocks = 2
+    num_decoder_layers = 6  # 12
     window_size = 256
     total_steps = 100000
     warmup_steps = 8000
-    grad_norm = 1.
-    n_workers_loader = 8
+    grad_norm = 5.
+    n_workers_loader = 4  # 8
+    val_every = 250
+    n_val = 50
+    save_every = 5000
+    bart_model_path = '../../code/models/bart.base/model.pt'
 
     # Create dataloaders
     train_dataset = CRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_train.yaml')
-    train_collator = CRD3BatchCollator(train_dataset.pad_token)
+    train_collator = CRD3BatchCollator(train_dataset.pad_token, window_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator, num_workers=n_workers_loader)
     val_dataset = CRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_val.yaml')
-    val_collator = CRD3BatchCollator(val_dataset.pad_token)
+    val_collator = CRD3BatchCollator(val_dataset.pad_token, window_size)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator, num_workers=n_workers_loader)
 
     # Create model
     model = CRD3SummarizationModel(
-            vocab_size=train_dataset.vocab_size,
-            speaker_size=train_dataset.speaker_vocab_size,
-            model_dim=model_dim,
-            local_self_attn_window_size=window_size,
-            pad_token_idx=train_dataset.pad_token,
-            bos_token_idx=train_dataset.bos_token,
-            eos_token_idx=train_dataset.eos_token,
-            max_len=5000,
-            max_tgt_seq_len=200,
-            device=device)
+        vocab_size=train_dataset.vocab_size,
+        speaker_size=train_dataset.speaker_vocab_size,
+        model_dim=model_dim,
+        local_self_attn_window_size=window_size,
+        pad_token_idx=train_dataset.pad_token,
+        bos_token_idx=train_dataset.bos_token,
+        eos_token_idx=train_dataset.eos_token,
+        feedforward_dim=feedforward_dim,
+        num_local_self_attn=num_local_self_attn,
+        num_segment_full_self_attn=num_segment_full_self_attn,
+        num_top_down_blocks=num_top_down_blocks,
+        num_decoder_layers=num_decoder_layers,
+        max_len=4096,
+        max_tgt_seq_len=200,
+        device=device,
+        initialize_from_bart=bart_model_path
+    )
 
     # Training bits
     optim = Adam(model.parameters())
@@ -80,14 +88,15 @@ def main(
         scheduler=scheduler,
         writer=writer,
         tokenizer=train_dataset.tokenizer,
-        log_level=20
+        log_level=20,
+        save_every=save_every
     )
 
     trainer.train(
         n_step=total_steps,
-        val_every=1000,
-        n_val=10,
-        grad_norm=grad_norm
+        val_every=val_every,
+        n_val=n_val,
+        grad_norm=grad_norm,
     )
 
 

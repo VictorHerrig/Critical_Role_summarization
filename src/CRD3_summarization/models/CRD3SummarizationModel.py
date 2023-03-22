@@ -28,7 +28,8 @@ class CRD3SummarizationModel(nn.Module):
             avg_pool_stride: int = 24,
             max_len: int = 4000,
             max_tgt_seq_len: int = 150,
-            device: str = None
+            device: str = None,
+            initialize_from_bart: str = None
     ):
         super().__init__()
 
@@ -59,7 +60,8 @@ class CRD3SummarizationModel(nn.Module):
             avg_pool_kernel_size,
             avg_pool_stride,
             max_len,
-            device
+            device,
+            initialize_from_bart
         )
         self._decoder_linear = nn.Linear(model_dim, vocab_size, device=device)
         self._decoder_smax = nn.Softmax(-1)
