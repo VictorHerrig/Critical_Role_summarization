@@ -1,17 +1,16 @@
 """Defines a Dataset for parsing and iterating over CRD3 data."""
 import json
 from os import listdir, path
-from typing import Iterator
+from typing import Iterator, Optional
 
 import numpy as np
-import pandas as pd
+import pandas as pd  # TODO: Replace with own function to remove requirement
 import torch
 import yaml
 from numpy import ceil
+from tokenizers import Tokenizer
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
-
-from tokenizers import Tokenizer
 
 
 class CRD3Dataset(IterableDataset):
@@ -27,7 +26,6 @@ class CRD3Dataset(IterableDataset):
             Path to the configuration YAML file. See CRD3Dataset_train.yaml for configuration documentation.
         """
         super().__init__()
-        # TODO: src_seq_len and tgt_seq_len
         # Load config
         with open(cfg_file, 'r') as f:
             self._cfg: dict = yaml.safe_load(f)
@@ -58,8 +56,15 @@ class CRD3Dataset(IterableDataset):
         # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
         for speaker_strings, turn_strings, summary_string in self.iter_chunk(shuffle=True):
+            # Make sure there are no empty string
+            # TODO: WARN logging
+            if len(summary_string) <= 0: continue
+            speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
+                                                  if len(s) > 0 and len(t) > 0])
+            if len(speaker_strings) <= 0 or len(turn_strings) <= 0: continue
+
             buffer.append((speaker_strings, turn_strings, summary_string))
-            if len(buffer) < self._buffer_size:
+            if len(buffer) > self.buffer_size:
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
 
         # Finish out the buffer after all samples have been pulled
@@ -69,67 +74,6 @@ class CRD3Dataset(IterableDataset):
         # Clear out the buffer
         buffer.clear()
         # TODO: Above perhaps not needed
-
-        # TODO: Batch size?
-
-    def lookup_token(
-            self,
-            val: str | int
-    ) -> int | str:
-        """Lookup either token or indices in the object's vocabulary.
-
-        Parameters
-        ----------
-        val
-
-        Returns
-        -------
-
-        """
-        # TODO: Implement str -> hash -> idx and idx -> hash -> str
-        if self._tokenizer is None:
-            raise ValueError('No tokenizer passed!')
-        if isinstance(val, str):
-            ret = self._tokenizer.token_to_id(val)
-            if ret is None:
-                ret = self._tokenizer.token_to_id('<UNK>')
-        elif isinstance(val, int):
-            ret = self._tokenizer.id_to_token(val)
-            if ret is None:
-                ret = '<UNK>'
-        else:
-            raise ValueError()
-
-        return ret
-
-    def lookup_speaker_token(
-            self,
-            val: str | int
-    ) -> int | str:
-        """Lookup either token or indices in the object's speaker vocabulary.
-
-        Parameters
-        ----------
-        val
-
-        Returns
-        -------
-
-        """
-        if self._speaker_tokenizer is None:
-            raise ValueError('No speaker tokenizer passed!')
-        if isinstance(val, str):
-            ret = self._speaker_tokenizer.token_to_id(val)
-            if ret is None:
-                ret = self._speaker_tokenizer.token_to_id('<UNK>')
-        elif isinstance(val, int):
-            ret = self._speaker_tokenizer.id_to_token(val)
-            if ret is None:
-                ret = '<UNK>'
-        else:
-            raise ValueError()
-
-        return ret
 
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
@@ -142,16 +86,16 @@ class CRD3Dataset(IterableDataset):
         -------
 
         """
-        if self._tokenizer is None:
+        if self.tokenizer is None:
             raise ValueError('No tokenizer passed!')
-        return self._tokenizer.decode(token_idxs.tolist())
+        return self.tokenizer.decode(token_idxs.tolist())
 
     def _prepare_data(
             self,
             speaker_strings: list[str],
             turn_strings: list[str],
             summary_string: str
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Takes sample strings and converts them to encoded vectors. The targets consist of a tensor of stacked one-hot
         encodings for each summary token. The data consist of a tensor of stacked vecors, each of which is a
         concatenation of a multi-hot speaker encoding with a one-hot token encoding.
@@ -169,20 +113,18 @@ class CRD3Dataset(IterableDataset):
         -------
         source: torch.Tensor
             One-hot token encoding of turn_strings of dimension (src_seq_len, vocab_size).
-        speakers: torch.Tensor
-            Multi-hot speaker encoding of dimension (src_seq_len, speaker_vocab_size + vocab_size).
-        targets: torch.Tensor
+        speaker: torch.Tensor
+            Multi-hot speaker encoding of dimension (src_seq_len, speaker_vocab_size).
+        target: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
-        src_key_padding_mask: torch.Tensor
-            Padding mask tensor of same shape dimension 0 of source.
-        tgt_key_padding_mask: torch.Tensor
-            Padding mask tensor of same shape dimension 0 of target.
         """
         # Tokenize and one-hot summary strings
-        target_idxs = self._tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len]
-        target: torch.Tensor = one_hot(target_idxs, num_classes=self.vocab_size).to(torch.float32)
-        # targets.requires_grad = True
-        # TODO: Decide where to set requires_grad
+        target_idxs = self.tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len - 2]  # -2 for <EOS> and <BOS>
+        target = torch.concat((
+            one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.float32),  # <BOS>
+            one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.float32),  # summary
+            one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.float32)  # <EOS>
+        ))
 
         # Create multi-hot speaker encoding
         src_chunk_data = []
@@ -191,48 +133,29 @@ class CRD3Dataset(IterableDataset):
         for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
 
             # Create one-hot encoding for each token in the turn
-            turn_idxs = self._tokenizer.encode(turn_str).ids
+            turn_idxs = self.tokenizer.encode(turn_str).ids
             if len(turn_idxs) + chunk_len > self.max_src_seq_len:
                 turn_idxs = turn_idxs[:self.max_src_seq_len - chunk_len]
             chunk_len += len(turn_idxs)
-            turn_data: torch.Tensor = one_hot(turn_idxs, num_classes=self.vocab_size).to(torch.float32)
-            # turn_data.requires_grad = True
+            turn_data: torch.Tensor = one_hot(torch.tensor(turn_idxs), num_classes=self.vocab_size).to(torch.float32)
             src_chunk_data.append(turn_data)
 
             # Stack speaker so there is an identical speaker tensor for each utterance tensor
-            speaker_idxs = self._tokenizer.encode(turn_speaker_str).ids
+            speaker_idxs = self.speaker_tokenizer.encode(turn_speaker_str).ids
             speaker_data: torch.Tensor = torch.zeros(self.speaker_vocab_size, dtype=torch.float32)
             speaker_data[speaker_idxs] = 1.
-            speaker_data = speaker_data.repeat(turn_data.size(0))
-            # speaker_data.requires_grad = True
+            speaker_data = speaker_data.repeat((turn_data.size(0), 1))
             speaker_chunk_data.append(speaker_data)
 
             # Only read up to the max chunk length
-            if chunk_len == self.max_src_seq_len:
+            if chunk_len >= self.max_src_seq_len:
                 break
 
         # Concat all chunk data to make source and speaker tensors
-        source = torch.stack(src_chunk_data, dim=0)
-        speaker = torch.stack(speaker_chunk_data, dim=0)
+        source = torch.concat(src_chunk_data, dim=0)
+        speaker = torch.concat(speaker_chunk_data, dim=0)
 
-        # Calculate padding masks
-        src_key_padding_mask = torch.arange(self.max_src_seq_len) > source.size(0)  # (max_src_seq_len, vocab_size)
-        tgt_key_padding_mask = torch.arange(self.max_tgt_seq_len) > target.size(0)  # (max_tgt_seq_len, vocab_size)
-
-        # Add padding to the source and target. Add zeros to the speaker
-        src_pad_amt = self.max_src_seq_len - source.size(0)
-        tgt_pad_amt = self.max_tgt_seq_len - target.size(0)
-        src_pad_data = torch.zeros((src_pad_amt, self.vocab_size), dtype=torch.float32)  # (src_pad_amt, vocab_size)
-        src_pad_data[:, self.pad_token] = 1.
-        speaker_pad_data = torch.zeros((src_pad_amt, self.speaker_vocab_size), dtype=torch.float32)  # (src_pad_amt, speaker_vocab_size)
-        tgt_pad_data = torch.zeros((tgt_pad_amt, self.vocab_size), dtype=torch.float32)  # (tgt_pad_amt, vocab_size)
-        tgt_pad_data[:, self.pad_token] = 1.
-
-        source = torch.concat((source, src_pad_data), dim=0)  # (max_src_seq_len, vocab_size)
-        speaker = torch.concat((speaker, speaker_pad_data), dim=0)  # (max_src_seq_len, speaker_vocab_size)
-        target = torch.concat((target, tgt_pad_data), dim=0)  # (max_tgt_seq_len, vocab_size)
-
-        return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
+        return source, speaker, target
 
     def iter_chunk(
             self,
@@ -348,6 +271,10 @@ class CRD3Dataset(IterableDataset):
         return len(self._files)
 
     @property
+    def buffer_size(self):
+        return self._buffer_size
+
+    @property
     def indir(self):
         return self._indir
 
@@ -360,8 +287,16 @@ class CRD3Dataset(IterableDataset):
         return self._max_tgt_seq_len
 
     @property
+    def tokenizer(self):
+        return self._tokenizer
+
+    @property
+    def speaker_tokenizer(self):
+        return self._speaker_tokenizer
+
+    @property
     def vocab_size(self):
-        return self._tokenizer.get_vocab_size()
+        return self.tokenizer.get_vocab_size()
 
     @property
     def speaker_vocab_size(self):
@@ -369,16 +304,76 @@ class CRD3Dataset(IterableDataset):
 
     @property
     def pad_token(self):
-        return self._tokenizer.token_to_id('<PAD>')
+        return self.tokenizer.token_to_id('<PAD>')
 
     @property
     def unk_token(self):
-        return self._tokenizer.token_to_id('<UNK>')
+        return self.tokenizer.token_to_id('<UNK>')
 
     @property
     def bos_token(self):
-        return self._tokenizer.token_to_id('<BOS>')
+        return self.tokenizer.token_to_id('<BOS>')
 
     @property
     def eos_token(self):
-        return self._tokenizer.token_to_id('<EOS>')
+        return self.tokenizer.token_to_id('<EOS>')
+
+
+class CRD3BatchCollator:
+    def __init__(self, pad_token_idx: str):
+        self.pad_token_idx = pad_token_idx
+
+    def __call__(
+            self,
+            samples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        source, speaker, target = zip(*samples)
+        source, src_key_padding_mask = self.add_padding(source)
+        speaker = CRD3BatchCollator.add_speaker_padding(speaker)
+        target, tgt_key_padding_mask = self.add_padding(target)
+
+        # Tokens/speakers: (seq_len, bsz, model_dim)
+        # Padding: (bsz, seq_len, model_dim)
+        return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
+
+    def add_padding(self, inputs: list[torch.Tensor]) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # Shapes
+        max_len = max([t.size(0) for t in inputs])
+        vocab_size = inputs[0].size(-1)
+
+        if any([max_len - t.size(0) > 0 for t in inputs]):
+            # Create padding masks
+            padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.bool) for t in inputs], dim=0)
+        else:
+            padding_mask = None
+
+        output = list(inputs)
+
+        # Append padding one-hot vectors
+        for i, t in enumerate(output):
+            pad_amt = max_len - t.size(0)
+            if pad_amt > 0:
+                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
+                padding[:, self.pad_token_idx] = 1.
+                output[i] = torch.concat((t, padding), dim=0)
+
+        # Create a batch axis at axis 1
+        return torch.stack(output, dim=1), padding_mask
+
+    @staticmethod
+    def add_speaker_padding(inputs: list[torch.Tensor]) -> torch.Tensor:
+        # Shapes
+        max_len = max([t.size(0) for t in inputs])
+        vocab_size = inputs[0].size(-1)
+
+        output = list(inputs)
+
+        # Fill with all zeros
+        for i, t in enumerate(output):
+            pad_amt = max_len - t.size(0)
+            if pad_amt > 0:
+                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
+                output[i] = torch.concat((t, padding), dim=0)
+
+        # Create a batch axis at axis 1
+        return torch.stack(output, dim=1)

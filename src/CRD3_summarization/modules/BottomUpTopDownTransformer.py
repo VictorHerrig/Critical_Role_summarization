@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from .BottomUpTopDownEncoder import BottomUpTopDownEncoder
 
 
-# TODO: Taken from some torch tutorial code: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
+# Taken from some torch tutorial code: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
 class PositionalEncoding(nn.Module):
 
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
@@ -43,7 +43,7 @@ class BottomUpTopDownTransformer(nn.Module):
             dropout: float = 0.1,
             avg_pool_kernel_size: int = 32,
             avg_pool_stride: int = 24,
-            max_len: int = 10000,  # TODO: Examine this in particular
+            max_len: int = 4000,
             device: str = None
     ):
         super().__init__()
@@ -52,7 +52,7 @@ class BottomUpTopDownTransformer(nn.Module):
             dropout=dropout,
             max_len=max_len
         )
-        encoder = BottomUpTopDownEncoder(
+        self._encoder = BottomUpTopDownEncoder(
             model_dim,
             local_self_attn_window_size,
             feedforward_dim,
@@ -68,7 +68,7 @@ class BottomUpTopDownTransformer(nn.Module):
         self._model = nn.Transformer(
             d_model=model_dim,
             nhead=num_attn_heads,
-            custom_encoder=encoder,
+            custom_encoder=self._encoder,
             num_decoder_layers=num_decoder_layers,
             dropout=dropout,
             device=device

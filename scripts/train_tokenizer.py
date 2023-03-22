@@ -10,7 +10,7 @@ from tokenizers import pre_tokenizers
 from tokenizers.models import BPE, WordLevel
 from tokenizers.trainers import BpeTrainer, WordLevelTrainer
 
-sys.path.append('../src/')
+sys.path.append('../src/CRD3_summarization')
 try:
     from loaders.CRD3Dataset import CRD3Dataset
 except ImportError as e:
