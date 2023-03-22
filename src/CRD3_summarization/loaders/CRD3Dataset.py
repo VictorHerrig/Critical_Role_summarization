@@ -68,12 +68,11 @@ class CRD3Dataset(IterableDataset):
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
 
         # Finish out the buffer after all samples have been pulled
-        for speaker_samp, turn_samp, summary_samp in np.random.permutation(buffer):
+        for i in np.random.permutation(np.arange(len(buffer))):
+            speaker_samp, turn_samp, summary_samp = buffer[i]
             yield self._prepare_data(speaker_samp, turn_samp, summary_samp)
-
-        # Clear out the buffer
         buffer.clear()
-        # TODO: Above perhaps not needed
+
 
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
@@ -320,8 +319,9 @@ class CRD3Dataset(IterableDataset):
 
 
 class CRD3BatchCollator:
-    def __init__(self, pad_token_idx: str):
+    def __init__(self, pad_token_idx: str, window_size: int):
         self.pad_token_idx = pad_token_idx
+        self.window_size = window_size
 
     def __call__(
             self,
@@ -329,7 +329,7 @@ class CRD3BatchCollator:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         source, speaker, target = zip(*samples)
         source, src_key_padding_mask = self.add_padding(source)
-        speaker = CRD3BatchCollator.add_speaker_padding(speaker)
+        speaker = self.add_speaker_padding(speaker)
         target, tgt_key_padding_mask = self.add_padding(target)
 
         # Tokens/speakers: (seq_len, bsz, model_dim)
@@ -337,8 +337,10 @@ class CRD3BatchCollator:
         return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
 
     def add_padding(self, inputs: list[torch.Tensor]) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        # Shapes
+        # Seq len must be a multiple of window_size for sliding chunk MM in local attention
         max_len = max([t.size(0) for t in inputs])
+        max_len = ((max_len // self.window_size) + int(max_len % self.window_size != 0)) * self.window_size
+        #max_len += self.window_size - (max_len % self.window_size) if max_len % self.window_size != 0 else 0
         vocab_size = inputs[0].size(-1)
 
         if any([max_len - t.size(0) > 0 for t in inputs]):
@@ -360,10 +362,10 @@ class CRD3BatchCollator:
         # Create a batch axis at axis 1
         return torch.stack(output, dim=1), padding_mask
 
-    @staticmethod
-    def add_speaker_padding(inputs: list[torch.Tensor]) -> torch.Tensor:
+    def add_speaker_padding(self, inputs: list[torch.Tensor]) -> torch.Tensor:
         # Shapes
         max_len = max([t.size(0) for t in inputs])
+        max_len = ((max_len // self.window_size) + int(max_len % self.window_size != 0)) * self.window_size
         vocab_size = inputs[0].size(-1)
 
         output = list(inputs)

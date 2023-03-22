@@ -40,10 +40,6 @@ class DiagonaledMM(torch.autograd.Function):
         assert device in ['cpu', 'cuda']
         device = None if device == 'cpu' else device
         tgt = tvm.target.Target(device, 'llvm')
-        print('\nCOMPUTE\n')
-        print(nvcc.get_target_compute_version(target=tgt))
-        print('\nCUDA\n')
-        print(tvm.contrib.nvcc.get_cuda_version(cuda_path=None))
         #tgt_host="llvm"
 
         b = tvm.te.var('b')  # batch size
