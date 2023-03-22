@@ -52,7 +52,7 @@ class LocalSelfAttention(nn.Module):
         self._query = nn.Linear(hidden_size, hidden_size, device=device)
         self._key = nn.Linear(hidden_size, hidden_size, device=device)
         self._value = nn.Linear(hidden_size, hidden_size, device=device)
-        self._softmax = nn.Softmax(hidden_size)
+        # self._softmax = nn.Softmax(-1)
 
         self._autoregressive = autoregressive
         assert self._window_size > 0
@@ -72,7 +72,7 @@ class LocalSelfAttention(nn.Module):
         val: Tensor
             Tensor of shape (sequence_length, batch_size, hidden_dim).
         key_padding_mask: Tensor, optional
-            Tensor of shape (sequence_length, batch_size) containing 1 where input sequence is padded and 0 everywhere
+            Tensor of shape (batch_size, sequence_length) containing 1 where input sequence is padded and 0 everywhere
             else. If None, no masking will be used. (Default = None)
 
         Returns
@@ -98,12 +98,13 @@ class LocalSelfAttention(nn.Module):
         # Apply attention mask
         mask_invalid_locations(attn_weights, self.window_size, self.dilation, self.autoregressive)
         if key_padding_mask is not None:
-            # This implementation is fast and takes very little memory because num_heads x hidden_size = 1
+            # This implementation is fast and takes very little memory because num_heads x hidden_size = 1  <-- ?????
             # from (bsz, seq_len) to (bsz, seq_len, num_heads, hidden_size)
-            key_padding_mask = key_padding_mask.unsqueeze(dim=-1).unsqueeze(dim=-1)
+            # key_padding_mask = key_padding_mask.unsqueeze(dim=-1).unsqueeze(dim=-1).view(seq_len, bsz)
+            key_padding_mask = key_padding_mask.view(bsz, seq_len, 1, 1)#.transpose(0, 1)
             # cast to float/half then replace 1s with -inf
             float_mask = key_padding_mask.type_as(q).masked_fill(key_padding_mask, -10000.0)
-            float_mask = float_mask.repeat(1, 1, 1, 1)
+            # float_mask = float_mask.repeat(1, 1, 1, 1)
             all_ones = float_mask.new_ones(size=float_mask.size())  # tensor of ones
             # diagonal mask with zeros everywhere and -inf inplace of padding
             d_mask = diagonaled_mm(all_ones, float_mask, self.window_size, self.dilation, False, 0, False)

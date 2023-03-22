@@ -56,8 +56,15 @@ class CRD3Dataset(IterableDataset):
         # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
         for speaker_strings, turn_strings, summary_string in self.iter_chunk(shuffle=True):
+            # Make sure there are no empty string
+            # TODO: WARN logging
+            if len(summary_string) <= 0: continue
+            speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
+                                                  if len(s) > 0 and len(t) > 0])
+            if len(speaker_strings) <= 0 or len(turn_strings) <= 0: continue
+
             buffer.append((speaker_strings, turn_strings, summary_string))
-            if len(buffer) < self._buffer_size:
+            if len(buffer) > self.buffer_size:
                 yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
 
         # Finish out the buffer after all samples have been pulled
@@ -264,6 +271,10 @@ class CRD3Dataset(IterableDataset):
         return len(self._files)
 
     @property
+    def buffer_size(self):
+        return self._buffer_size
+
+    @property
     def indir(self):
         return self._indir
 
@@ -321,6 +332,8 @@ class CRD3BatchCollator:
         speaker = CRD3BatchCollator.add_speaker_padding(speaker)
         target, tgt_key_padding_mask = self.add_padding(target)
 
+        # Tokens/speakers: (seq_len, bsz, model_dim)
+        # Padding: (bsz, seq_len, model_dim)
         return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
 
     def add_padding(self, inputs: list[torch.Tensor]) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -330,7 +343,7 @@ class CRD3BatchCollator:
 
         if any([max_len - t.size(0) > 0 for t in inputs]):
             # Create padding masks
-            padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.float32) for t in inputs], dim=1)
+            padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.bool) for t in inputs], dim=0)
         else:
             padding_mask = None
 

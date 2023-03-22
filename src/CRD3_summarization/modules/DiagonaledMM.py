@@ -2,6 +2,7 @@
 Taken from the Longformer code developed by the Allen Institute for AI under the Apache License:
 https://github.com/allenai/longformer
 """
+import pathlib
 from typing import Union
 from functools import lru_cache
 
@@ -24,49 +25,57 @@ class DiagonaledMM(torch.autograd.Function):
         device: str in ['cpu' or 'cuda']
         b0, b1, b2: size of tensor tiles. Very important for good performance
         '''
+        print('Compiling diagonaledMM kernel...')
         import tvm  # import the full tvm library here for compilation. Don't import at the top of the file in case we don't need to compile
         from tvm.contrib import nvcc
-        @tvm.register_func
+
         def tvm_callback_cuda_compile(code):
             """Use nvcc compiler for better perf."""
-            ptx = nvcc.compile_cuda(code, target="ptx", arch='sm_52')  # use old arch for this to work on old GPUs
+            ptx = nvcc.compile_cuda(code, target_format="ptx", arch='sm_75')  # TODO: Adjust the arch to sm_<number>, where the number is specific to your GPU and can be found here for NVIDIA GPUs: https://developer.nvidia.com/cuda-gpus
             return ptx
+
+        tvm.register_func(tvm_callback_cuda_compile, override=True)
 
         assert dtype in ['float16', 'float32', 'float64']
         assert device in ['cpu', 'cuda']
         device = None if device == 'cpu' else device
-        tgt_host="llvm"
+        tgt = tvm.target.Target(device, 'llvm')
+        print('\nCOMPUTE\n')
+        print(nvcc.get_target_compute_version(target=tgt))
+        print('\nCUDA\n')
+        print(tvm.contrib.nvcc.get_cuda_version(cuda_path=None))
+        #tgt_host="llvm"
 
-        b = tvm.var('b')  # batch size
-        n = tvm.var('n')  # sequence length
-        h = tvm.var('h')  # number of heads
-        m = tvm.var('m')  # hidden dimension
-        w = tvm.var('w')  # window size
-        w_upper = tvm.var('w_upper')  # window size to the right of the word. Should be `0` or `w`
-        padding = tvm.var('padding')  # padding
-        transpose_t1 = tvm.var('transpose_t1')  # t1 should be transposed
-        t1d3 = tvm.var('t1d3')  # last dimension of t1
-        t3d3 = tvm.var('t3d3')  # last dimension of t3 (the result tensor)
-        X = tvm.placeholder((b, n, h, t1d3), name='X', dtype=dtype)  # first tensor
-        Y = tvm.placeholder((b, n, h, m), name='Y', dtype=dtype)  # second tensor
-        k = tvm.reduce_axis((0, t1d3), name='k')  # dimension to sum over
-        D  = tvm.placeholder((h), name='D', dtype='int')  # dilation per head
+        b = tvm.te.var('b')  # batch size
+        n = tvm.te.var('n')  # sequence length
+        h = tvm.te.var('h')  # number of heads
+        m = tvm.te.var('m')  # hidden dimension
+        w = tvm.te.var('w')  # window size
+        w_upper = tvm.te.var('w_upper')  # window size to the right of the word. Should be `0` or `w`
+        padding = tvm.te.var('padding')  # padding
+        transpose_t1 = tvm.te.var('transpose_t1')  # t1 should be transposed
+        t1d3 = tvm.te.var('t1d3')  # last dimension of t1
+        t3d3 = tvm.te.var('t3d3')  # last dimension of t3 (the result tensor)
+        X = tvm.te.placeholder((b, n, h, t1d3), name='X', dtype=dtype)  # first tensor
+        Y = tvm.te.placeholder((b, n, h, m), name='Y', dtype=dtype)  # second tensor
+        k = tvm.te.reduce_axis((0, t1d3), name='k')  # dimension to sum over
+        D  = tvm.te.placeholder((h), name='D', dtype='int')  # dilation per head
         output_shape = (b, n, h, t3d3)  # shape of the result tensor
-        algorithm = lambda l, i, q, j: tvm.sum(
-            tvm.if_then_else(
+        algorithm = lambda l, i, q, j: tvm.te.sum(
+            tvm.te.if_then_else(
                 t3d3 == m,  # if output dimension == m, then t1 is diagonaled (FIXME: This breaks if t3d3 == m == t1d3)
-                tvm.if_then_else(
+                tvm.te.if_then_else(
                     transpose_t1 == 0,
-                    tvm.if_then_else(
-                        tvm.all(
+                    tvm.te.if_then_else(
+                        tvm.te.all(
                             i + D[q] * (k - w) >= 0,
                             i + D[q] * (k - w) < n,
                         ),
                         X[l, i, q, k] * Y[l, i + D[q] * (k - w), q, j],  # t1 is diagonaled
                         padding
                     ),
-                    tvm.if_then_else(
-                        tvm.all(
+                    tvm.te.if_then_else(
+                        tvm.te.all(
                             i + D[q] * (k - w_upper) >= 0,  # `w_upper` to handle the case `autoregressive=True`
                             i + D[q] * (k - w_upper) < n,
                         ),
@@ -74,8 +83,8 @@ class DiagonaledMM(torch.autograd.Function):
                         padding
                     ),
                 ),
-                tvm.if_then_else(
-                    tvm.all(
+                tvm.te.if_then_else(
+                    tvm.te.all(
                         i + D[q] * (j - w) >= 0,
                         i + D[q] * (j - w) < n,
                     ),
@@ -84,8 +93,8 @@ class DiagonaledMM(torch.autograd.Function):
                 )
             ), axis=k)
 
-        Z = tvm.compute(output_shape, algorithm, name='Z')  # automatically generate cuda code
-        s = tvm.create_schedule(Z.op)
+        Z = tvm.te.compute(output_shape, algorithm, name='Z')  # automatically generate cuda code
+        s = tvm.te.create_schedule(Z.op)
 
         print('Lowering: \n ===================== \n{}'.format(tvm.lower(s, [X, Y, D], simple_mode=True)))
 
@@ -96,13 +105,13 @@ class DiagonaledMM(torch.autograd.Function):
         j_outer, j_inner = s[Z].split(s[Z].op.axis[-1], factor=b1)
         i_outer, i_inner = s[Z].split(s[Z].op.axis[1], factor=b2)
 
-        s[Z].bind(j_outer, tvm.thread_axis("blockIdx.x"))
-        s[Z].bind(j_inner, tvm.thread_axis("threadIdx.y"))
+        s[Z].bind(j_outer, tvm.te.thread_axis("blockIdx.x"))
+        s[Z].bind(j_inner, tvm.te.thread_axis("threadIdx.y"))
 
-        s[Z].bind(i_outer, tvm.thread_axis("blockIdx.y"))
-        s[Z].bind(i_inner, tvm.thread_axis("threadIdx.z"))
+        s[Z].bind(i_outer, tvm.te.thread_axis("blockIdx.y"))
+        s[Z].bind(i_inner, tvm.te.thread_axis("threadIdx.z"))
 
-        tx = tvm.thread_axis("threadIdx.x")
+        tx = tvm.te.thread_axis("threadIdx.x")
         s[Z].bind(s[Z].op.reduce_axis[0], tx)
         s[ZF].compute_at(s[Z], s[Z].op.reduce_axis[0])
         s[Z].set_store_predicate(tx.var.equal(0))
@@ -110,23 +119,24 @@ class DiagonaledMM(torch.autograd.Function):
         print('Lowering with GPU splits: \n ===================== \n{}'.format(tvm.lower(s, [X, Y, D], simple_mode=True)))
 
         # compiling the automatically generated cuda code
-        diagonaled_mm = tvm.build(s, [X, Y, Z, D, w, w_upper, padding, transpose_t1, t3d3], target=device, target_host=tgt_host, name='diagonaled_mm')
+        diagonaled_mm = tvm.build(s, [X, Y, Z, D, w, w_upper, padding, transpose_t1, t3d3], target=tgt, name='diagonaled_mm')
+        # diagonaled_mm = tvm.build(s, [X, Y, Z, D, w, w_upper, padding, transpose_t1, t3d3], target=device, target_host=tgt_host, name='diagonaled_mm')
         return diagonaled_mm
 
     @staticmethod
     def _get_lib_filename(dtype: str, device: str):
-        base_filename = 'longformer/lib/lib_diagonaled_mm'
+        base_filename = 'lib/lib_diagonaled_mm'
         return '{}_{}_{}.so'.format(base_filename, dtype, device)
 
     @staticmethod
     def _save_compiled_function(f, dtype: str, device: str):
-        if not os.path.exists('longformer/lib/'):
-            os.makedirs('longformer/lib/')
+        if not os.path.exists('lib/'):
+            os.makedirs('lib/')
         f.export_library(DiagonaledMM._get_lib_filename(dtype, device))
 
     @staticmethod
     def _load_compiled_function(dtype: str, device: str):
-        from tvm.module import load  # this can be the small runtime python library, and doesn't need to be the whole thing
+        from tvm.runtime import load_module  # this can be the small runtime python library, and doesn't need to be the whole thing
         filename = DiagonaledMM._get_lib_filename(dtype, device)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         potential_dirs = ['../../', '../', './', f'{current_dir}/', f'{current_dir}/../']
@@ -134,7 +144,9 @@ class DiagonaledMM(torch.autograd.Function):
             filepath = '{}{}'.format(potential_dir, filename)
             if os.path.isfile(filepath):
                 print('Loading tvm binary from: {}'.format(filepath))
-                return load(filepath)
+                print('Loading tvm binary from: {}'.format(os.path.abspath(filepath)))
+
+                return load_module(filepath)
         return None
 
     @staticmethod

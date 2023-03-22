@@ -16,6 +16,17 @@ Dungeons&Dragons games. It has become very popular (boasting the highest
 revenue of all Twitch streams) and the fan base has made available
 transcripts and summaries of episodes.
 
+## Requirements
+Aside from those packages listed in setup.py, you will need to additionally install:
+- cuda-toolkit (this can be done system-wide or with conda using the nvidia channel)
+- cuda-nvcc (this can be done system-wide or with conda using the nvidia channel)
+- LLVM (this can be done system-wide or with conda using the nvidia channel)
+- TVM (you will need to build from source using the following options in config.cmake: 
+  USE_CUDA YES; (USE_LLVM "/path/to/llvm-config --link-static"); set(HIDE_PRIVATE_SYMBOLS ON)).
+  This may frankly be rather trying
+- Any C++ compilation tools required to build TVM on your system
+- 
+
 ## Acknowledgements
 
 CRD3 Data is produced under the Creative Commons Attribution-ShareAlike 4.0

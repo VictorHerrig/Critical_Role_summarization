@@ -2,6 +2,7 @@
 import torch
 from numpy import unravel_index
 from torch import nn, Tensor
+from torch.nn import functional as F
 
 from ..modules.BottomUpTopDownTransformer import BottomUpTopDownTransformer
 
@@ -41,7 +42,7 @@ class CRD3SummarizationModel(nn.Module):
         self._bos_token_idx = bos_token_idx
         self._eos_token_idx = eos_token_idx
 
-        self._embedding_layer = nn.Embedding(vocab_size, model_dim, device=device)
+        self._embedding_layer = nn.Linear(vocab_size, model_dim, device=device)
         # The model will get the concatenation of word embeddings and speaker vectors as source representations
         # Speakers will be concatenated to word embeddings and reduced to the model dim via linear layer
         self._encoder_linear = nn.Linear(model_dim + speaker_size, model_dim, device=device)
@@ -61,7 +62,7 @@ class CRD3SummarizationModel(nn.Module):
             device
         )
         self._decoder_linear = nn.Linear(model_dim, vocab_size, device=device)
-        self._decoder_smax = nn.Softmax(vocab_size)
+        self._decoder_smax = nn.Softmax(-1)
         self._device = device
 
     def forward(
@@ -72,7 +73,7 @@ class CRD3SummarizationModel(nn.Module):
             src_key_padding_mask: Tensor = None,
             tgt_key_padding_mask: Tensor = None
     ) -> Tensor:
-        tgt_mask = self._model.generate_square_subsequent_mask(tgt.shape[0])
+        tgt_mask = self._model.generate_square_subsequent_mask(tgt.shape[0]).to(self.device)
 
         src_embeddings = self._embedding_layer(src)
         tgt_embeddings = self._embedding_layer(tgt)

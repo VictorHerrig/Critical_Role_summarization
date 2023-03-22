@@ -121,8 +121,8 @@ class Trainer:
                 source = source.to(self.device)
                 speaker = speaker.to(self.device)
                 targets = targets.to(self.device)
-                src_mask = src_mask.to(self.device)
-                tgt_mask = tgt_mask.to(self.device)
+                src_mask = src_mask.to(self.device) if src_mask is not None else None
+                tgt_mask = tgt_mask.to(self.device) if tgt_mask is not None else None
                 step_loss = self._train_step(source, speaker, targets, src_mask, tgt_mask, grad_norm)
                 epoch_loss += step_loss
 
@@ -181,11 +181,12 @@ class Trainer:
         """
         self._optim.zero_grad()
         output: Tensor = self._model.forward(source, speaker, targets, src_mask, tgt_mask)
-        loss: Tensor = self._loss_fn(output.view(-1, output.size(-1)))
+        loss: Tensor = self._loss_fn(output.view(-1, output.size(-1)), targets.view(-1, targets.size(-1)))
         loss.backward()
 
+        # TODO: Fix illegal memory access
         if grad_norm is not None:
-            nn.utils.clip_grad_norm(self._model.parameters(), grad_norm)
+            nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
 
         # TODO: Log gradients
 
