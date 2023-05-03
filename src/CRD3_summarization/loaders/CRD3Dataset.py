@@ -73,7 +73,6 @@ class CRD3Dataset(IterableDataset):
             yield self._prepare_data(speaker_samp, turn_samp, summary_samp)
         buffer.clear()
 
-
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
 
@@ -88,6 +87,21 @@ class CRD3Dataset(IterableDataset):
         if self.tokenizer is None:
             raise ValueError('No tokenizer passed!')
         return self.tokenizer.decode(token_idxs.tolist())
+
+    def construct_speaker_string(self, token_idxs: torch.Tensor) -> str:
+        """Builds a string from a list of token indices.
+
+        Parameters
+        ----------
+        token_idxs
+
+        Returns
+        -------
+
+        """
+        if self.speaker_tokenizer is None:
+            raise ValueError('No tokenizer passed!')
+        return self.speaker_tokenizer.decode(token_idxs.tolist())
 
     def _prepare_data(
             self,

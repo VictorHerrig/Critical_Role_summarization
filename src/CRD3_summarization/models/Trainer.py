@@ -1,6 +1,7 @@
 """"""
 import logging
 import os
+from collections import defaultdict
 from typing import Optional
 
 import torch
@@ -86,7 +87,8 @@ class Trainer:
             n_val: Optional[int] = None,
             continue_from: Optional[int] = None,
             grad_norm: Optional[float] = None,
-            grad_every: Optional[int] = 16
+            grad_every: Optional[int] = 16,
+            example_every: Optional[int] = None
     ) -> None:
         """Trains the model for a specified number of steps or epochs.
 
@@ -106,6 +108,7 @@ class Trainer:
         if (n_step is None and n_epoch is None) or (n_step is not None and n_epoch is not None):
             raise ValueError('Must give only one of n_step or n_epoch')
         self._model.train()
+        # print([k for k, _ in self._model.named_parameters()])
 
         # step: int = 0 if continue_from is None else continue_from
         step: int = continue_from or 0
@@ -116,7 +119,7 @@ class Trainer:
             epoch_loss = 0.
             epoch_start_step = step
             for source, speaker, targets, src_mask, tgt_mask in self.train_loader:
-                if step >= n_step if n_step is not None else False:
+                if grad_step >= n_step if n_step is not None else False:
                     # Stop if we've reached the step quota
                     return
                 step += 1
@@ -127,29 +130,52 @@ class Trainer:
                 targets = targets.to(self.device)
                 src_mask = src_mask.to(self.device) if src_mask is not None else None
                 tgt_mask = tgt_mask.to(self.device) if tgt_mask is not None else None
-                step_loss = self._train_step(source, speaker, targets, src_mask, tgt_mask, grad_norm)
+                step_loss, step_output = self._train_step(source, speaker, targets, src_mask, tgt_mask, grad_norm)
                 grad_step_loss += step_loss
                 epoch_loss += step_loss
 
                 if step % grad_every == 0:
                     grad_step += 1
-                    # TODO: Fix illegal memory access
                     if grad_norm is not None:
                         nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
 
-                    # TODO: Log gradients
+                    # Log train loss and gradients
+                    logger.info(f'Step {grad_step} - Train loss : {grad_step_loss}')
+                    if self.writer is not None:
+                        self.writer.add_scalar('Train loss', grad_step_loss, global_step=grad_step)
+
+                        grad_dict = defaultdict(lambda: 0.)
+                        for param_name, val in self._model.named_parameters():
+                            layer_name = None
+                            if 'decoder.layers' in param_name:
+                                layer_name = f'decoder.layer.{param_name.split("decoder.layers.")[1].split(".")[0]}'
+                            elif 'decoder_linear' in param_name:
+                                layer_name = 'decoder_linear'
+                            elif 'encoder' in param_name:
+                                layer_name = f'encoder.{param_name.split("._encoder._")[1].split(".")[0]}'
+                            elif 'speaker_linear' in param_name:
+                                layer_name = 'speaker_linear'
+                            elif 'embedding' in param_name:
+                                layer_name = 'embedding'
+                            if layer_name is not None:
+                                grad_dict[layer_name] += val.grad.sum().item()
+
+                        self.writer.add_scalars('gradients', grad_dict, global_step=grad_step)
 
                     self._optim.step()
 
                     if self.scheduler is not None:
                         self.scheduler.step()
 
-                    # TODO: Log sample_sentence
-
-                    # Log train loss
-                    logger.info(f'Step {grad_step} - Train loss : {grad_step_loss}')
-                    if self.writer is not None:
-                        self.writer.add_scalar('Train loss', grad_step_loss, global_step=grad_step)
+                    if grad_step % example_every == 0:
+                        eg_input = self.train_loader.dataset.construct_string(source.to('cpu')[:, 0, :].argmax(0))
+                        self.writer.add_text('Example input', eg_input, global_step=grad_step)
+                        eg_speaker = self.train_loader.dataset.construct_speaker_string(speaker.to('cpu')[:, 0, :].argmax(0))
+                        self.writer.add_text('Example speakers', eg_speaker, global_step=grad_step)
+                        eg_target = self.train_loader.dataset.construct_string(targets.to('cpu')[:, 0, :].argmax(0))
+                        self.writer.add_text('Example target output', eg_target, global_step=grad_step)
+                        eg_summ = self.train_loader.dataset.construct_string(step_output.to('cpu')[:, 0, :].argmax(0))
+                        self.writer.add_text('Example model output', eg_summ, global_step=grad_step)
 
                     # Run a validation is necessary
                     if grad_step % val_every == 0:
@@ -218,7 +244,7 @@ class Trainer:
         #
         # # TODO: Log sample_sentence
 
-        return loss.item()
+        return loss.item(), output
 
     def _validate(self, n_val: Optional[int] = None) -> float:
         assert self.val_loader is not None
