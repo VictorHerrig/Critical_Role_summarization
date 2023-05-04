@@ -52,7 +52,7 @@ def main(
         normalizers.NFKC(),
         normalizers.BertNormalizer()
     ])
-    tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=True)
     tokenizer.decoder = decoders.BPEDecoder()
 
     dataset = CRD3Dataset(cfg_file)

@@ -31,9 +31,10 @@ def main(
     warmup_steps = 8000
     grad_norm = 5.
     n_workers_loader = 4  # 8
-    val_every = 250
+    val_every = 25
     n_val = 50
-    save_every = 5000
+    save_every = 10000
+    example_every = 50
     bart_model_path = '../../code/models/bart.base/model.pt'
 
     # Create dataloaders
@@ -97,6 +98,7 @@ def main(
         val_every=val_every,
         n_val=n_val,
         grad_norm=grad_norm,
+        example_every=example_every
     )
 
 

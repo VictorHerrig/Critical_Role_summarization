@@ -46,7 +46,7 @@ class CRD3SummarizationModel(nn.Module):
         self._embedding_layer = nn.Linear(vocab_size, model_dim, device=device)
         # The model will get the concatenation of word embeddings and speaker vectors as source representations
         # Speakers will be concatenated to word embeddings and reduced to the model dim via linear layer
-        self._encoder_linear = nn.Linear(model_dim + speaker_size, model_dim, device=device)
+        self._speaker_linear = nn.Linear(model_dim + speaker_size, model_dim, device=device)
         self._model = BottomUpTopDownTransformer(
             model_dim,
             num_decoder_layers,
@@ -63,6 +63,10 @@ class CRD3SummarizationModel(nn.Module):
             device,
             initialize_from_bart
         )
+        self.num_decoder_layers = num_decoder_layers
+        self.num_local_self_attn = num_local_self_attn
+        self.num_segment_full_self_attn = num_segment_full_self_attn
+        self.num_top_down_blocks = num_top_down_blocks
         self._decoder_linear = nn.Linear(model_dim, vocab_size, device=device)
         self._decoder_smax = nn.Softmax(-1)
         self._device = device
@@ -81,7 +85,7 @@ class CRD3SummarizationModel(nn.Module):
         tgt_embeddings = self._embedding_layer(tgt)
         concat_src = torch.concat((speakers, src_embeddings), dim=-1)
 
-        src_input = self._encoder_linear(concat_src)
+        src_input = self._speaker_linear(concat_src)
         out_seq = self._model(src_input,
                               tgt_embeddings,
                               tgt_mask=tgt_mask,
@@ -108,7 +112,7 @@ class CRD3SummarizationModel(nn.Module):
             # Find encoded source representation
             src_embeddings = self._embedding_layer(src)
             concat_src = torch.concat((speakers, src_embeddings), dim=-1)
-            src_input = self._encoder_linear(concat_src)
+            src_input = self._speaker_linear(concat_src)
             src_encoding = self._model.model.encoder(src_input, src_key_padding_mask=src_key_padding_mask)
 
             # Initialize target as <bos> token
