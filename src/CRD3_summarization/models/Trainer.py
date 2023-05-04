@@ -2,7 +2,7 @@
 import logging
 import os
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 from tokenizers import Tokenizer
@@ -108,6 +108,7 @@ class Trainer:
         if (n_step is None and n_epoch is None) or (n_step is not None and n_epoch is not None):
             raise ValueError('Must give only one of n_step or n_epoch')
         self._model.train()
+        #example_every = 1  # TODO: FIX
         # print([k for k, _ in self._model.named_parameters()])
 
         # step: int = 0 if continue_from is None else continue_from
@@ -168,14 +169,15 @@ class Trainer:
                         self.scheduler.step()
 
                     if grad_step % example_every == 0:
-                        eg_input = self.train_loader.dataset.construct_string(source.to('cpu')[:, 0, :].argmax(0))
+                        eg_input = self.train_loader.dataset.construct_string(source.to('cpu')[:, 0, :].argmax(1))
                         self.writer.add_text('Example input', eg_input, global_step=grad_step)
-                        eg_speaker = self.train_loader.dataset.construct_speaker_string(speaker.to('cpu')[:, 0, :].argmax(0))
+                        eg_speaker = self.train_loader.dataset.construct_speaker_string(speaker.to('cpu')[:, 0, :].argmax(1))
                         self.writer.add_text('Example speakers', eg_speaker, global_step=grad_step)
-                        eg_target = self.train_loader.dataset.construct_string(targets.to('cpu')[:, 0, :].argmax(0))
+                        eg_target = self.train_loader.dataset.construct_string(targets.to('cpu')[:, 0, :].argmax(1))
                         self.writer.add_text('Example target output', eg_target, global_step=grad_step)
-                        eg_summ = self.train_loader.dataset.construct_string(step_output.to('cpu')[:, 0, :].argmax(0))
+                        eg_summ = self.train_loader.dataset.construct_string(step_output.to('cpu')[:, 0, :].argmax(1))
                         self.writer.add_text('Example model output', eg_summ, global_step=grad_step)
+                        self.writer.add_text('Example target mask', f"[{','.join([str(int(b)) for b in tgt_mask[0, :].to('cpu').tolist()])}]", global_step=grad_step)
 
                     # Run a validation is necessary
                     if grad_step % val_every == 0:
@@ -205,7 +207,7 @@ class Trainer:
             src_mask: Tensor,
             tgt_mask: Tensor,
             grad_norm: Optional[float] = None
-    ) -> float:
+    ) -> Tuple[float, Tensor]:
         """ Trains a single batch/step and return the loss value.
 
         Parameters
@@ -230,19 +232,6 @@ class Trainer:
         output: Tensor = self._model.forward(source, speaker, targets, src_mask, tgt_mask)
         loss: Tensor = self._loss_fn(output.view(-1, output.size(-1)), targets.view(-1, targets.size(-1)))
         loss.backward()
-
-        # # TODO: Fix illegal memory access
-        # if grad_norm is not None:
-        #     nn.utils.clip_grad_norm_(self._model.parameters(), grad_norm)
-        #
-        # # TODO: Log gradients
-        #
-        # self._optim.step()
-        #
-        # if self.scheduler is not None:
-        #     self.scheduler.step()
-        #
-        # # TODO: Log sample_sentence
 
         return loss.item(), output
 

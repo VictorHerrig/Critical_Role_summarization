@@ -13,6 +13,7 @@ from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
 
 
+# TODO: Abstraction
 class CRD3Dataset(IterableDataset):
     def __init__(
             self,
@@ -86,7 +87,7 @@ class CRD3Dataset(IterableDataset):
         """
         if self.tokenizer is None:
             raise ValueError('No tokenizer passed!')
-        return self.tokenizer.decode(token_idxs.tolist())
+        return str.replace(self.tokenizer.decode(token_idxs.tolist(), skip_special_tokens=False), 'Ġ', ' ')
 
     def construct_speaker_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
@@ -360,6 +361,7 @@ class CRD3BatchCollator:
         if any([max_len - t.size(0) > 0 for t in inputs]):
             # Create padding masks
             padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.bool) for t in inputs], dim=0)
+            # print(padding_mask.shape)
         else:
             padding_mask = None
 
