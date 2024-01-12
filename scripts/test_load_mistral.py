@@ -1,19 +1,13 @@
-import torch
+# This script simply tests that you can load the model into GPU memory
 
-from transformers import AutoModel
-from transformers import BitsAndBytesConfig
+
+from CRD3_summarization.models.HuggingfaceModels import QuantModelFactory
 
 
 def main():
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        load_in_8bit=False,
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
-    model = AutoModel.from_pretrained(
-        'mistralai/Mistral-7B-v0.1',
-        quantization_config=quant_config
-    )
+    model, tokenizer = QuantModelFactory.mistral_7b()
+    for param_name, param in model.named_parameters():
+        print(f'{param_name}: {tuple(param.shape)}')
     input()  # Wait and check VRAM
 
 
