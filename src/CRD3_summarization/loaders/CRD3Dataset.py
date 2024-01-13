@@ -128,6 +128,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
             source_turn_tokens: list[list[int]],
             summary_tokens: list[int]
     ) -> (torch.Tensor, torch.Tensor):
+        raise NotImplementedError()
 
     def _prepare_data(
             self,
@@ -157,39 +158,15 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         target: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
         """
-        src_turn_tokens = []
-        # chunk_len = 0
-        for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
+        def tokenize_turn(turn_speaker_str, turn_str):
+            return self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str + '\n')
 
-            # Create one-hot encoding for each token in the turn
-            turn_tokens = self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str + '\n')
-            # turn_idxs = self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str)
-            #if len(turn_idxs) + chunk_len > self.max_seq_len:
-            #    turn_idxs = turn_idxs[:self.max_seq_len - chunk_len]
-            #chunk_len += len(turn_idxs)
-            #turn_data: torch.Tensor = one_hot(torch.tensor(turn_idxs), num_classes=self.vocab_size).to(torch.bfloat16)
-            # src_chunk_tokens.append(turn_data)
-            src_turn_tokens.append(turn_tokens)
-
-            # # Only read up to the max chunk length
-            # if chunk_len >= self.max_seq_len:
-            #     break
-
-        #source = torch.concat(src_chunk_tokens, dim=0)
-        
+        # Tokenize script and summary
+        src_turn_tokens = [tokenize_turn(*turn_pair) for turn_pair in zip(speaker_strings, turn_strings)]
         summary_tokens = self.tokenizer.encode(summary_string)
-        
-        source, target = self._build_inputs(src_turn_tokens, summary_tokens)
 
-
-        # target_idxs = self.tokenizer.encode(summary_string)[:self.max_seq_len - 1]  # -2 for <EOS>
-        # target = torch.concat((
-        #     # one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.bfloat16),  # <BOS>
-        #     one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.bfloat16),  # summary
-        #     one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.bfloat16)  # <EOS>
-        # ))
-
-        return source, target
+        # Build tensors according to subclass
+        return self._build_inputs(src_turn_tokens, summary_tokens)
 
     def iter_chunk(
             self,
@@ -399,14 +376,25 @@ class CRD3EncoderDecoderDataset(CRD3Dataset):
             source_turn_tokens: list[list[int]],
             summary_tokens: list[int]
     ) -> (torch.Tensor, torch.Tensor):
+        """
+        
+        Parameters
+        ----------
+        source_turn_tokens
+        summary_tokens
+
+        Returns
+        -------
+
+        """
         # Check if the script fits within the max sequence length - 2 (for BOs and EOS)
         num_source_tokens = [len(s) for s in source_turn_tokens]
         total_source_tokens = sum(num_source_tokens)
-        max_len = self.max_seq_len - 2
-        if total_source_tokens > self.max_seq_len - 2:
+        max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens)
+        if total_source_tokens > max_len:
             # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
             cum_seq_len = np.cumsum(reversed(num_source_tokens))
-            first_idx = len(num_source_tokens) - np.searchsorted(self.max_seq_len - 2, cum_seq_len)
+            first_idx = len(num_source_tokens) - np.searchsorted(max_len, cum_seq_len)
             source_turn_tokens = source_turn_tokens[first_idx:]
 
         # One-hot the combined turns with BOS and EOS
@@ -439,15 +427,26 @@ class CRD3DecoderOnlyDataset(CRD3Dataset):
             source_turn_tokens: list[list[int]],
             summary_tokens: list[int]
     ) -> (torch.Tensor, torch.Tensor):
+        """
+
+        Parameters
+        ----------
+        source_turn_tokens
+        summary_tokens
+
+        Returns
+        -------
+
+        """
         # Check if the script fits within the max sequence length - 2 (for BOs and EOS)
         num_source_tokens = [len(s) for s in source_turn_tokens]
         total_source_tokens = sum(num_source_tokens)
-        max_len = self.max_seq_len - 2
-        if total_source_tokens > self.max_seq_len - 2:
+        max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens) - len(summary_tokens)
+        if total_source_tokens > max_len:
             # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
             cum_seq_len = np.cumsum(reversed(num_source_tokens))
-            first_idx = len(num_source_tokens) - np.searchsorted(self.max_seq_len - 2, cum_seq_len)
-            source_turn_tokens = source_turn_tokens[first_idx:]
+            first_idx = len(num_source_tokens) - np.searchsorted(max_len, cum_seq_len)
+            source_turn_tokens = source_turn_tokens[first_idx:]  # TODO: If empty
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)

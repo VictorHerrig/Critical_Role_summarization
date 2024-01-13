@@ -27,10 +27,10 @@ prompt_prefix: "The following is an excerpt from a show in which multiple actors
   Laura likes to drink ale!'\n
   Maye be summarized as\n
   'Travis says Laura likes ale.'\n
-  The script to be summarized follows:"
+  The script to be summarized follows:\n"
 # Short version
 #prompt_prefix: "The following is an excerpt from a show in which multiple actors are playing Dungeons and \
 #  Dragons. Write a summary of the script. When the actors are talking out of character, use the actor's names in the \
 #  summary. Then the actors are talking in-character, use the character's names in the summary. The script to be \
-#  summarized follows:"
-prompt_suffix: "\nThat is the end of the script. The summary of that script begins here:"
+#  summarized follows:\n"
+prompt_suffix: "\n\nThat is the end of the script. The summary of that script begins here:\n"
