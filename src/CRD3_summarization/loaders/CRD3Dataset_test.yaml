@@ -14,9 +14,7 @@ n_summary: ''
 buffer_size: 256
 # Path to text vocab
 tokenizer_path: '../data/tokenizer.json'
-# Path to speaker vocab
-spkr_tokenizer_path: '../data/speaker_tokenizer.json'
 # Maximum length of source sequences
-max_src_seq_len: 4096
+max_seq_len: 4096
 # Maximum length of target (summary) sequences
 max_tgt_seq_len: 200

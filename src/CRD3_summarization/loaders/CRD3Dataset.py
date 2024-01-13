@@ -1,4 +1,5 @@
 """Defines a Dataset for parsing and iterating over CRD3 data."""
+import abc
 import json
 from os import listdir, path
 from typing import Iterator, Optional
@@ -8,13 +9,15 @@ import pandas as pd  # TODO: Replace with own function to remove requirement
 import torch
 import yaml
 from numpy import ceil
-from tokenizers import Tokenizer
+from transformers import PreTrainedTokenizer, AutoTokenizer
 from torch.nn.functional import one_hot
 from torch.utils.data import IterableDataset, get_worker_info
 
 
-# TODO: Abstraction
-class CRD3Dataset(IterableDataset):
+# TODO: Experiment with adding summaries from previous chunks to prompt prefix
+
+
+class CRD3Dataset(IterableDataset, abc.ABC):
     def __init__(
             self,
             cfg_file: str
@@ -45,11 +48,20 @@ class CRD3Dataset(IterableDataset):
         self._files = np.array(self._files)
 
         # Prepare text processing objects
-        self._max_src_seq_len = self._cfg['max_src_seq_len']
-        self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
+        self._max_seq_len = self._cfg['max_src_seq_len']
 
-        self._tokenizer = Tokenizer.from_file(self._cfg['tokenizer_path']) if 'tokenizer_path' in self._cfg else None
-        self._speaker_tokenizer = Tokenizer.from_file(self._cfg['spkr_tokenizer_path']) if 'spkr_tokenizer_path' in self._cfg else None
+        self._tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(self._cfg['tokenizer_path'])
+
+        # TODO: Langchain or similar eventually
+        # Prompt prefix and suffix strings
+        self._prompt_prefix = self._cfg.get('prompt_prefix', '')
+        self._prompt_suffix = self._cfg.get('prompt_suffix', '')
+
+        # Pseudo lazy evaluation of prompt prefix and suffix tokens and tensors
+        self._prompt_prefix_tokens = None
+        self._prompt_suffix_tokens = None
+        self._prompt_prefix_tensor = None
+        self._prompt_suffix_tensor = None
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         # Summary-turn pairs are grouped in JSON files
@@ -57,7 +69,7 @@ class CRD3Dataset(IterableDataset):
         # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
         buffer = []
         for speaker_strings, turn_strings, summary_string in self.iter_chunk(shuffle=True):
-            # Make sure there are no empty string
+            # Make sure there are no empty strings
             # TODO: WARN logging
             if len(summary_string) <= 0: continue
             speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
@@ -74,6 +86,29 @@ class CRD3Dataset(IterableDataset):
             yield self._prepare_data(speaker_samp, turn_samp, summary_samp)
         buffer.clear()
 
+    def __getitem__(self, idx):
+        if idx >= len(self._files):
+            raise IndexError('Index out of range of files')
+
+        # Load file of this index and take the first chunk
+        json_iter = CRD3Dataset.parse_json(self._files[idx])
+        speaker_strings, turn_strings, summary_string = next(json_iter)
+
+        # Retry until a non-empty summary appears
+        try:
+            while len(summary_string) <= 0:
+                speaker_strings, turn_strings, summary_string = next(json_iter)
+        except StopIteration as e:
+            raise ValueError(f'No valid summary in file index {idx} {self._files[idx]}')
+
+        # If the turns and/or speakers and all empty, raise error
+        speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
+                                              if len(s) > 0 and len(t) > 0])
+        if len(speaker_strings) <= 0 or len(turn_strings) <= 0:
+            raise ValueError(f'No valid turn strings in file index {idx} {self._files[idx]}')
+
+        return self._prepare_data(speaker_strings, turn_strings, summary_string)
+
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
 
@@ -85,31 +120,21 @@ class CRD3Dataset(IterableDataset):
         -------
 
         """
-        if self.tokenizer is None:
-            raise ValueError('No tokenizer passed!')
         return str.replace(self.tokenizer.decode(token_idxs.tolist(), skip_special_tokens=False), 'Ġ', ' ')
-
-    def construct_speaker_string(self, token_idxs: torch.Tensor) -> str:
-        """Builds a string from a list of token indices.
-
-        Parameters
-        ----------
-        token_idxs
-
-        Returns
-        -------
-
-        """
-        if self.speaker_tokenizer is None:
-            raise ValueError('No tokenizer passed!')
-        return self.speaker_tokenizer.decode(token_idxs.tolist())
+    
+    @abc.abstractmethod
+    def _build_inputs(
+            self,
+            source_turn_tokens: list[list[int]],
+            summary_tokens: list[int]
+    ) -> (torch.Tensor, torch.Tensor):
 
     def _prepare_data(
             self,
             speaker_strings: list[str],
             turn_strings: list[str],
             summary_string: str
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Takes sample strings and converts them to encoded vectors. The targets consist of a tensor of stacked one-hot
         encodings for each summary token. The data consist of a tensor of stacked vecors, each of which is a
         concatenation of a multi-hot speaker encoding with a one-hot token encoding.
@@ -132,44 +157,39 @@ class CRD3Dataset(IterableDataset):
         target: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
         """
-        # Tokenize and one-hot summary strings
-        target_idxs = self.tokenizer.encode(summary_string).ids[:self.max_tgt_seq_len - 2]  # -2 for <EOS> and <BOS>
-        target = torch.concat((
-            one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.float32),  # <BOS>
-            one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.float32),  # summary
-            one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.float32)  # <EOS>
-        ))
-
-        # Create multi-hot speaker encoding
-        src_chunk_data = []
-        speaker_chunk_data = []
-        chunk_len = 0
+        src_turn_tokens = []
+        # chunk_len = 0
         for turn_speaker_str, turn_str in zip(speaker_strings, turn_strings):
 
             # Create one-hot encoding for each token in the turn
-            turn_idxs = self.tokenizer.encode(turn_str).ids
-            if len(turn_idxs) + chunk_len > self.max_src_seq_len:
-                turn_idxs = turn_idxs[:self.max_src_seq_len - chunk_len]
-            chunk_len += len(turn_idxs)
-            turn_data: torch.Tensor = one_hot(torch.tensor(turn_idxs), num_classes=self.vocab_size).to(torch.float32)
-            src_chunk_data.append(turn_data)
+            turn_tokens = self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str + '\n')
+            # turn_idxs = self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str)
+            #if len(turn_idxs) + chunk_len > self.max_seq_len:
+            #    turn_idxs = turn_idxs[:self.max_seq_len - chunk_len]
+            #chunk_len += len(turn_idxs)
+            #turn_data: torch.Tensor = one_hot(torch.tensor(turn_idxs), num_classes=self.vocab_size).to(torch.bfloat16)
+            # src_chunk_tokens.append(turn_data)
+            src_turn_tokens.append(turn_tokens)
 
-            # Stack speaker so there is an identical speaker tensor for each utterance tensor
-            speaker_idxs = self.speaker_tokenizer.encode(turn_speaker_str).ids
-            speaker_data: torch.Tensor = torch.zeros(self.speaker_vocab_size, dtype=torch.float32)
-            speaker_data[speaker_idxs] = 1.
-            speaker_data = speaker_data.repeat((turn_data.size(0), 1))
-            speaker_chunk_data.append(speaker_data)
+            # # Only read up to the max chunk length
+            # if chunk_len >= self.max_seq_len:
+            #     break
 
-            # Only read up to the max chunk length
-            if chunk_len >= self.max_src_seq_len:
-                break
+        #source = torch.concat(src_chunk_tokens, dim=0)
+        
+        summary_tokens = self.tokenizer.encode(summary_string)
+        
+        source, target = self._build_inputs(src_turn_tokens, summary_tokens)
 
-        # Concat all chunk data to make source and speaker tensors
-        source = torch.concat(src_chunk_data, dim=0)
-        speaker = torch.concat(speaker_chunk_data, dim=0)
 
-        return source, speaker, target
+        # target_idxs = self.tokenizer.encode(summary_string)[:self.max_seq_len - 1]  # -2 for <EOS>
+        # target = torch.concat((
+        #     # one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.bfloat16),  # <BOS>
+        #     one_hot(torch.tensor(target_idxs), num_classes=self.vocab_size).to(torch.bfloat16),  # summary
+        #     one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.bfloat16)  # <EOS>
+        # ))
+
+        return source, target
 
     def iter_chunk(
             self,
@@ -277,8 +297,8 @@ class CRD3Dataset(IterableDataset):
             for chunk in json_data:
                 # Load summary, speaker and utterance strings
                 summary_string: str = chunk['CHUNK']
-                speaker_strings, turn_strings = zip(*[(' '.join(c['NAMES']), ' '.join(c['UTTERANCES']))
-                                                     for c in chunk['TURNS']])
+                speaker_strings, turn_strings = zip(*[(', '.join(t['NAMES']), ' '.join(t['UTTERANCES']))
+                                                      for t in chunk['TURNS']])
                 yield speaker_strings, turn_strings, summary_string
 
     def __len__(self):
@@ -293,44 +313,159 @@ class CRD3Dataset(IterableDataset):
         return self._indir
 
     @property
-    def max_src_seq_len(self):
-        return self._max_src_seq_len
-
-    @property
-    def max_tgt_seq_len(self):
-        return self._max_tgt_seq_len
+    def max_seq_len(self):
+        return self._max_seq_len
 
     @property
     def tokenizer(self):
         return self._tokenizer
 
     @property
-    def speaker_tokenizer(self):
-        return self._speaker_tokenizer
-
-    @property
     def vocab_size(self):
         return self.tokenizer.get_vocab_size()
 
     @property
-    def speaker_vocab_size(self):
-        return self._speaker_tokenizer.get_vocab_size()
+    def pad_token(self) -> int:
+        return self.tokenizer.encode(self.tokenizer.pad_token)[0]
 
     @property
-    def pad_token(self):
-        return self.tokenizer.token_to_id('<PAD>')
+    def unk_token(self) -> int:
+        return self.tokenizer.encode(self.tokenizer.unk_token)[0]
 
     @property
-    def unk_token(self):
-        return self.tokenizer.token_to_id('<UNK>')
+    def bos_token(self) -> int:
+        return self.tokenizer.encode(self.tokenizer.bos_token)[0]
 
     @property
-    def bos_token(self):
-        return self.tokenizer.token_to_id('<BOS>')
+    def bos_token_tensor(self):
+        return one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.bfloat16)
 
     @property
-    def eos_token(self):
-        return self.tokenizer.token_to_id('<EOS>')
+    def eos_token(self) -> int:
+        return self.tokenizer.encode(self.tokenizer.eos_token)[0]
+
+    @property
+    def eos_token_tensor(self):
+        return one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.bfloat16)
+
+    @property
+    def prompt_prefix(self) -> str:
+        return self._prompt_prefix
+    
+    @property
+    def prompt_prefix_tokens(self) -> list[int]:
+        if self._prompt_prefix_tokens is None:
+            self._prompt_prefix_tokens = self.tokenizer.encode(self.prompt_prefix)
+        return self._prompt_prefix_tokens
+
+    @property
+    def prompt_prefix_tensor(self) -> torch.Tensor:
+        if self._prompt_prefix_tensor is None:
+            self._prompt_prefix_tensor = one_hot(
+                torch.tensor(self.prompt_prefix_tokens), num_classes=self.vocab_size
+            ).to(torch.bfloat16)
+        return self._prompt_prefix_tensor
+
+    @property
+    def prompt_suffix(self) -> str:
+        return self._prompt_suffix
+    
+    @property
+    def prompt_suffix_tokens(self) -> list[int]:
+        if self._prompt_suffix_tokens is None:
+            self._prompt_suffix_tokens = self.tokenizer.encode(self.prompt_suffix)
+        return self._prompt_suffix_tokens
+
+    @property
+    def prompt_suffix_tensor(self) -> torch.Tensor:
+        if self._prompt_suffix_tensor is None:
+            self._prompt_suffix_tensor = one_hot(
+                torch.tensor(self.prompt_suffix_tokens), num_classes=self.vocab_size
+            ).to(torch.bfloat16)
+        return self._prompt_suffix_tensor
+
+
+class CRD3EncoderDecoderDataset(CRD3Dataset):
+    def __init__(
+            self,
+            cfg_file: str
+    ) -> None:
+        super().__init__(cfg_file)
+        self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
+
+
+    def _build_inputs(
+            self,
+            source_turn_tokens: list[list[int]],
+            summary_tokens: list[int]
+    ) -> (torch.Tensor, torch.Tensor):
+        # Check if the script fits within the max sequence length - 2 (for BOs and EOS)
+        num_source_tokens = [len(s) for s in source_turn_tokens]
+        total_source_tokens = sum(num_source_tokens)
+        max_len = self.max_seq_len - 2
+        if total_source_tokens > self.max_seq_len - 2:
+            # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
+            cum_seq_len = np.cumsum(reversed(num_source_tokens))
+            first_idx = len(num_source_tokens) - np.searchsorted(self.max_seq_len - 2, cum_seq_len)
+            source_turn_tokens = source_turn_tokens[first_idx:]
+
+        # One-hot the combined turns with BOS and EOS
+        source_turn_tokens = np.concatenate(source_turn_tokens)
+        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+
+        # Add the prompt prefix and suffix
+        source = torch.concat((
+            self.bos_token_tensor,
+            self.prompt_prefix_tensor,
+            source,
+            self.prompt_suffix_tensor,
+            self.eos_token_tensor
+        ))
+
+        # One-hot the target with BOS and EOS
+        summary_tokens = [self.bos_token] + summary_tokens + [self.eos_token]
+        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+
+        return source, target
+
+    @property
+    def max_tgt_seq_len(self):
+        return self._max_tgt_seq_len
+
+
+class CRD3DecoderOnlyDataset(CRD3Dataset):
+    def _build_inputs(
+            self,
+            source_turn_tokens: list[list[int]],
+            summary_tokens: list[int]
+    ) -> (torch.Tensor, torch.Tensor):
+        # Check if the script fits within the max sequence length - 2 (for BOs and EOS)
+        num_source_tokens = [len(s) for s in source_turn_tokens]
+        total_source_tokens = sum(num_source_tokens)
+        max_len = self.max_seq_len - 2
+        if total_source_tokens > self.max_seq_len - 2:
+            # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
+            cum_seq_len = np.cumsum(reversed(num_source_tokens))
+            first_idx = len(num_source_tokens) - np.searchsorted(self.max_seq_len - 2, cum_seq_len)
+            source_turn_tokens = source_turn_tokens[first_idx:]
+
+        # One-hot the combined turns with BOS and EOS
+        source_turn_tokens = np.concatenate(source_turn_tokens)
+        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+
+        # Add the prompt prefix and suffix and BOS token
+        generation_tensor = torch.concat((
+            self.bos_token_tensor,
+            self.prompt_prefix_tensor,
+            source,
+            self.prompt_suffix_tensor,
+            target,
+            self.eos_token_tensor
+        ))
+
+        # Source and target are the same for decoder-only transformers
+        return generation_tensor, generation_tensor
 
 
 class CRD3BatchCollator:
@@ -371,7 +506,7 @@ class CRD3BatchCollator:
         for i, t in enumerate(output):
             pad_amt = max_len - t.size(0)
             if pad_amt > 0:
-                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
+                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.bfloat16)
                 padding[:, self.pad_token_idx] = 1.
                 output[i] = torch.concat((t, padding), dim=0)
 
@@ -390,7 +525,7 @@ class CRD3BatchCollator:
         for i, t in enumerate(output):
             pad_amt = max_len - t.size(0)
             if pad_amt > 0:
-                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.float32)
+                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.bfloat16)
                 output[i] = torch.concat((t, padding), dim=0)
 
         # Create a batch axis at axis 1

@@ -11,6 +11,6 @@ n_summary: ''
 # more memory.
 buffer_size: 256
 # Maximum length of source sequences
-max_src_seq_len: 10000
+max_seq_len: 10000
 # Maximum length of target (summary) sequences
 max_tgt_seq_len: 500

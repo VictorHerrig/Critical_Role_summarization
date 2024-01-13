@@ -8,6 +8,7 @@ def main():
     model, tokenizer = QuantModelFactory.mistral_7b()
     for param_name, param in model.named_parameters():
         print(f'{param_name}: {tuple(param.shape)}')
+    print(f'\n\nTokenizer vocab size: {tokenizer.vocab_size}')
     input()  # Wait and check VRAM
 
 
