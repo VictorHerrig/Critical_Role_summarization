@@ -302,20 +302,20 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         return self.tokenizer.vocab_size
 
     @property
-    def pad_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.pad_token, add_special_tokens=False)[0]
+    def pad_token_id(self) -> int:
+        return self.tokenizer.pad_token_id
 
     @property
-    def unk_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.unk_token, add_special_tokens=False)[0]
+    def unk_token_id(self) -> int:
+        return self.tokenizer.unk_token_id
 
     @property
-    def bos_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.bos_token, add_special_tokens=False)[0]
+    def bos_token_id(self) -> int:
+        return self.tokenizer.bos_token_id
 
     @property
-    def eos_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.eos_token, add_special_tokens=False)[0]
+    def eos_token_id(self) -> int:
+        return self.tokenizer.eos_token_id
 
     @property
     def pad_token_string(self) -> str:
@@ -335,11 +335,11 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
 
     @property
     def bos_token_tensor(self):
-        return one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.bfloat16)
+        return one_hot(torch.tensor([self.bos_token_id]), num_classes=self.vocab_size).to(torch.int)
 
     @property
     def eos_token_tensor(self):
-        return one_hot(torch.tensor([self.eos_token]), num_classes=self.vocab_size).to(torch.bfloat16)
+        return one_hot(torch.tensor([self.eos_token_id]), num_classes=self.vocab_size).to(torch.int)
 
     @property
     def prompt_prefix(self) -> str:
@@ -356,7 +356,7 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         if self._prompt_prefix_tensor is None:
             self._prompt_prefix_tensor = one_hot(
                 torch.tensor(self.prompt_prefix_tokens), num_classes=self.vocab_size
-            ).to(torch.bfloat16)
+            ).to(torch.int)
         return self._prompt_prefix_tensor
 
     @property
@@ -374,7 +374,7 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         if self._prompt_suffix_tensor is None:
             self._prompt_suffix_tensor = one_hot(
                 torch.tensor(self.prompt_suffix_tokens), num_classes=self.vocab_size
-            ).to(torch.bfloat16)
+            ).to(torch.int)
         return self._prompt_suffix_tensor
 
 
@@ -408,13 +408,13 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
         max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens)
         if total_source_tokens > max_len:
             # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
-            cum_seq_len = np.cumsum(reversed(num_source_tokens))
-            first_idx = len(num_source_tokens) - np.searchsorted(max_len, cum_seq_len)
+            cum_seq_len = np.cumsum(num_source_tokens[::-1])
+            first_idx = len(num_source_tokens) - np.searchsorted(cum_seq_len, max_len)
             source_turn_tokens = source_turn_tokens[first_idx:]
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
 
         # Add the prompt prefix and suffix
         source = torch.concat((
@@ -426,8 +426,8 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
         ))
 
         # One-hot the target with BOS and EOS
-        summary_tokens = [self.bos_token] + summary_tokens + [self.eos_token]
-        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+        summary_tokens = [self.bos_token_id] + summary_tokens + [self.eos_token_id]
+        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
 
         return source, target
 
@@ -459,17 +459,23 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
         max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens) - len(summary_tokens)
         if total_source_tokens > max_len:
             # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
-            cum_seq_len = np.cumsum(reversed(num_source_tokens))
-            first_idx = len(num_source_tokens) - np.searchsorted(max_len, cum_seq_len)
+            cum_seq_len = np.cumsum(num_source_tokens[::-1])
+            first_idx = len(num_source_tokens) - np.searchsorted(cum_seq_len, max_len)
             source_turn_tokens = source_turn_tokens[first_idx:]  # TODO: If empty
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
-        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.bfloat16)
+        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
+        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
 
         # Add the prompt prefix and suffix and BOS token
-        generation_tensor = torch.concat((
+        source = torch.concat((
+            self.bos_token_tensor,
+            self.prompt_prefix_tensor,
+            source,
+            self.prompt_suffix_tensor
+        ))
+        target = torch.concat((
             self.bos_token_tensor,
             self.prompt_prefix_tensor,
             source,
@@ -479,7 +485,7 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
         ))
 
         # Source and target are the same for decoder-only transformers
-        return generation_tensor, generation_tensor
+        return source, target
 
 
 class CRD3BatchCollator:

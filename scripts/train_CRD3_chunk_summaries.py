@@ -39,10 +39,10 @@ def main(
 
     # Create dataloaders
     train_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_train.yaml')
-    train_collator = CRD3BatchCollator(train_dataset.pad_token, window_size)
+    train_collator = CRD3BatchCollator(train_dataset.pad_token_id, window_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator, num_workers=n_workers_loader)
     val_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_val.yaml')
-    val_collator = CRD3BatchCollator(val_dataset.pad_token, window_size)
+    val_collator = CRD3BatchCollator(val_dataset.pad_token_id, window_size)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator, num_workers=n_workers_loader)
 
     # Create model
@@ -51,9 +51,9 @@ def main(
         speaker_size=train_dataset.speaker_vocab_size,
         model_dim=model_dim,
         local_self_attn_window_size=window_size,
-        pad_token_idx=train_dataset.pad_token,
-        bos_token_idx=train_dataset.bos_token,
-        eos_token_idx=train_dataset.eos_token,
+        pad_token_idx=train_dataset.pad_token_id,
+        bos_token_idx=train_dataset.bos_token_id,
+        eos_token_idx=train_dataset.eos_token_id,
         feedforward_dim=feedforward_dim,
         num_local_self_attn=num_local_self_attn,
         num_segment_full_self_attn=num_segment_full_self_attn,
