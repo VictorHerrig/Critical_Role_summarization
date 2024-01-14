@@ -8,7 +8,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from CRD3_summarization.loaders.CRD3Dataset import CRD3Dataset, CRD3BatchCollator
+from CRD3_summarization.loaders.CRD3Dataset import BaseCRD3Dataset, CRD3BatchCollator
 from CRD3_summarization.models.Trainer import Trainer
 from CRD3_summarization.models.CRD3SummarizationModel import CRD3SummarizationModel
 
@@ -38,11 +38,11 @@ def main(
     bart_model_path = '../../code/models/bart.base/model.pt'
 
     # Create dataloaders
-    train_dataset = CRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_train.yaml')
-    train_collator = CRD3BatchCollator(train_dataset.pad_token, window_size)
+    train_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_train.yaml')
+    train_collator = CRD3BatchCollator(train_dataset.pad_token_id, window_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator, num_workers=n_workers_loader)
-    val_dataset = CRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_val.yaml')
-    val_collator = CRD3BatchCollator(val_dataset.pad_token, window_size)
+    val_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_val.yaml')
+    val_collator = CRD3BatchCollator(val_dataset.pad_token_id, window_size)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator, num_workers=n_workers_loader)
 
     # Create model
@@ -51,9 +51,9 @@ def main(
         speaker_size=train_dataset.speaker_vocab_size,
         model_dim=model_dim,
         local_self_attn_window_size=window_size,
-        pad_token_idx=train_dataset.pad_token,
-        bos_token_idx=train_dataset.bos_token,
-        eos_token_idx=train_dataset.eos_token,
+        pad_token_idx=train_dataset.pad_token_id,
+        bos_token_idx=train_dataset.bos_token_id,
+        eos_token_idx=train_dataset.eos_token_id,
         feedforward_dim=feedforward_dim,
         num_local_self_attn=num_local_self_attn,
         num_segment_full_self_attn=num_segment_full_self_attn,

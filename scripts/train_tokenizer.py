@@ -84,7 +84,7 @@ def main(
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--cfg-file', required=True, type=str, help='Path to the CRD3Dataset yaml configuration file.')
+    parser.add_argument('--cfg-file', required=True, type=str, help='Path to the BaseCRD3Dataset yaml configuration file.')
     parser.add_argument('--outfile', required=True, type=str, help='Path of the output file (directories will not be made).')
     parser.add_argument('--spkr-outfile', required=True, type=str, help='Path of the output speaker file (directories will not be made).')
     parser.add_argument('--vocab-size', default=6000, type=int, help='Target vocabulary size. (Default=6000)')

@@ -1,3 +1,2 @@
-device: 'cuda:0'
-batch_size: 1
-tensorboard_logdir: '../tensorboard_logdir/2023-05-03/'
+batch_size: 8
+tensorboard_logdir: '../tensorboard_logdir/mistral-test-1/'

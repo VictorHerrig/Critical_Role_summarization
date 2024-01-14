@@ -1,7 +1,7 @@
 import torch
 import transformers
 
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import BitsAndBytesConfig
 
 
@@ -10,7 +10,8 @@ class QuantModelFactory:
     def load(
             model_path: str,
             tokenizer_path: str = None,
-            quant_config: dict = None
+            quant_config: dict = None,
+            **kwargs
     ) -> (transformers.PreTrainedModel, transformers.PreTrainedTokenizer):
         """
 
@@ -43,9 +44,11 @@ class QuantModelFactory:
         tokenizer = AutoTokenizer.from_pretrained(
             model_path if tokenizer_path is None else tokenizer_path
         )
-        model = AutoModel.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            quantization_config=quant_config
+            quantization_config=quant_config,
+            device_map='auto',
+            **kwargs
         )
 
         return model, tokenizer
@@ -54,4 +57,11 @@ class QuantModelFactory:
     def mistral_7b():
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1'
+        )
+
+    @staticmethod
+    def mistral_7b_flash():
+        return QuantModelFactory.load(
+            model_path='mistralai/Mistral-7B-v0.1',
+            attn_implementation='flash_attention_2'
         )
