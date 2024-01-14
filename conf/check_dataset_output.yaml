@@ -13,7 +13,7 @@ n_summary: ''
 # more memory.
 buffer_size: 1
 # Maximum length of sequences
-max_seq_len: 1024
+max_seq_len: 2048  # 1024
 # Prompt prefix
 # TODO: Description
 prompt_prefix: "The following is an excerpt from a show in which multiple actors are playing Dungeons and
