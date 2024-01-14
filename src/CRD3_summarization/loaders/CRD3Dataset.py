@@ -414,20 +414,29 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
+        #source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
+        source = torch.tensor(source_turn_tokens)
 
         # Add the prompt prefix and suffix
+        # source = torch.concat((
+        #     self.bos_token_tensor,
+        #     self.prompt_prefix_tensor,
+        #     source,
+        #     self.prompt_suffix_tensor,
+        #     self.eos_token_tensor
+        # ))
         source = torch.concat((
-            self.bos_token_tensor,
-            self.prompt_prefix_tensor,
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
             source,
-            self.prompt_suffix_tensor,
-            self.eos_token_tensor
-        ))
+            torch.tensor(self.prompt_suffix_tokens),
+            torch.tensor([self.eos_token_id])
+        )).to(torch.int).reshape(1, -1)
 
         # One-hot the target with BOS and EOS
         summary_tokens = [self.bos_token_id] + summary_tokens + [self.eos_token_id]
-        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
+        # target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
+        target = torch.tensor(summary_tokens).to(torch.int).reshape(1, -1)
 
         return source, target
 
@@ -465,24 +474,41 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
-        target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
+        # source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
+        source = torch.tensor(source_turn_tokens)
+        # target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
+        target = torch.tensor(summary_tokens)
 
         # Add the prompt prefix and suffix and BOS token
-        source = torch.concat((
-            self.bos_token_tensor,
-            self.prompt_prefix_tensor,
-            source,
-            self.prompt_suffix_tensor
-        ))
+        # source = torch.concat((
+        #     self.bos_token_tensor,
+        #     self.prompt_prefix_tensor,
+        #     source,
+        #     self.prompt_suffix_tensor
+        # ))
+        # target = torch.concat((
+        #     self.bos_token_tensor,
+        #     self.prompt_prefix_tensor,
+        #     source,
+        #     self.prompt_suffix_tensor,
+        #     target,
+        #     self.eos_token_tensor
+        # ))
+
         target = torch.concat((
-            self.bos_token_tensor,
-            self.prompt_prefix_tensor,
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
             source,
-            self.prompt_suffix_tensor,
+            torch.tensor(self.prompt_suffix_tokens),
             target,
-            self.eos_token_tensor
-        ))
+            torch.tensor([self.eos_token_id])
+        )).to(torch.int).reshape(1, -1)
+        source = torch.concat((
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
+            source,
+            torch.tensor(self.prompt_suffix_tokens)
+        )).to(torch.int).reshape(1, -1)
 
         # Source and target are the same for decoder-only transformers
         return source, target
