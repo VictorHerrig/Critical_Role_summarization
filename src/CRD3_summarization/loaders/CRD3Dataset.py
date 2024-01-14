@@ -39,7 +39,7 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         if 'idx_file' in self._cfg:
             idx_file = path.abspath(self._cfg['idx_file'])
             with open(idx_file, 'r') as f:
-                file_subset = [str(line) for line in f]
+                file_subset = [str(line).replace('\n', '') for line in f]
             self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
                            if 'json' in fn and fn.split('_')[0] in file_subset]
         else:
@@ -97,6 +97,8 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         if idx >= len(self._files):
             raise IndexError('Index out of range of files')
 
+        print(self._files[idx])
+        input()
         # Load file of this index and take the first chunk
         json_iter = BaseCRD3Dataset.parse_json(self._files[idx])
         speaker_strings, turn_strings, summary_string = next(json_iter)
@@ -128,6 +130,22 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
 
         """
         return str.replace(self.tokenizer.decode(token_idxs, skip_special_tokens=False), 'Ġ', ' ')
+
+    @abc.abstractmethod
+    def _build_input_prompt(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def _build_target(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        raise NotImplementedError()
     
     @abc.abstractmethod
     def _build_inputs(
@@ -386,6 +404,26 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
         super().__init__(cfg_file)
         self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
 
+    def _build_input_prompt(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.concat((
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
+            source,
+            torch.tensor(self.prompt_suffix_tokens),
+            torch.tensor([self.eos_token_id])
+        )).to(torch.int).reshape(1, -1)
+
+    def _build_target(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        return target.to(torch.int).reshape(1, -1)
+
     def _build_inputs(
             self,
             source_turn_tokens: list[list[int]],
@@ -414,17 +452,8 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        #source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
         source = torch.tensor(source_turn_tokens)
 
-        # Add the prompt prefix and suffix
-        # source = torch.concat((
-        #     self.bos_token_tensor,
-        #     self.prompt_prefix_tensor,
-        #     source,
-        #     self.prompt_suffix_tensor,
-        #     self.eos_token_tensor
-        # ))
         source = torch.concat((
             torch.tensor([self.bos_token_id]),
             torch.tensor(self.prompt_prefix_tokens),
@@ -435,10 +464,12 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
 
         # One-hot the target with BOS and EOS
         summary_tokens = [self.bos_token_id] + summary_tokens + [self.eos_token_id]
-        # target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
-        target = torch.tensor(summary_tokens).to(torch.int).reshape(1, -1)
+        target = torch.tensor(summary_tokens)
 
-        return source, target
+        input_prompt = self._build_input_prompt(source, target)
+        target_output = self._build_target(source, target)
+
+        return input_prompt, target_output
 
     @property
     def max_tgt_seq_len(self):
@@ -446,6 +477,32 @@ class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
 
 
 class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
+    def _build_input_prompt(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.concat((
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
+            source,
+            torch.tensor(self.prompt_suffix_tokens)
+        )).to(torch.int).reshape(1, -1)
+
+    def _build_target(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.concat((
+            torch.tensor([self.bos_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
+            source,
+            torch.tensor(self.prompt_suffix_tokens),
+            target,
+            torch.tensor([self.eos_token_id])
+        )).to(torch.int).reshape(1, -1)
+
     def _build_inputs(
             self,
             source_turn_tokens: list[list[int]],
@@ -474,44 +531,72 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
-        # source = one_hot(torch.tensor(source_turn_tokens), num_classes=self.vocab_size).to(torch.int)
         source = torch.tensor(source_turn_tokens)
-        # target = one_hot(torch.tensor(summary_tokens), num_classes=self.vocab_size).to(torch.int)
         target = torch.tensor(summary_tokens)
 
-        # Add the prompt prefix and suffix and BOS token
-        # source = torch.concat((
-        #     self.bos_token_tensor,
-        #     self.prompt_prefix_tensor,
-        #     source,
-        #     self.prompt_suffix_tensor
-        # ))
-        # target = torch.concat((
-        #     self.bos_token_tensor,
-        #     self.prompt_prefix_tensor,
-        #     source,
-        #     self.prompt_suffix_tensor,
-        #     target,
-        #     self.eos_token_tensor
-        # ))
+        input_prompt = self._build_input_prompt(source, target)
+        target_output = self._build_target(source, target)
 
-        target = torch.concat((
-            torch.tensor([self.bos_token_id]),
+        # Source and target are the same for decoder-only transformers
+        return input_prompt, target_output
+
+
+class CRD3MistralLiteDataset(CRD3DecoderOnlyDataset):
+    def _build_input_prompt(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        print(
+            torch.tensor([self.prompter_token_id]).size(),
+            torch.tensor(self.prompt_prefix_tokens).size(),
+            source.size(),
+            torch.tensor(self.prompt_suffix_tokens).size(),
+            torch.tensor([self.eos_token_id]).size(),
+            torch.tensor([self.assistant_token_id]).size()
+        )
+        return torch.concat((
+            torch.tensor([self.prompter_token_id]),
             torch.tensor(self.prompt_prefix_tokens),
             source,
             torch.tensor(self.prompt_suffix_tokens),
+            torch.tensor([self.eos_token_id]),
+            torch.tensor(self.tokenizer.encode('\n')),
+            torch.tensor([self.assistant_token_id])
+        )).to(torch.int).reshape(1, -1)
+
+    def _build_target(
+            self,
+            source: torch.Tensor,
+            target: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.concat((
+            torch.tensor([self.prompter_token_id]),
+            torch.tensor(self.prompt_prefix_tokens),
+            source,
+            torch.tensor(self.prompt_suffix_tokens),
+            torch.tensor([self.eos_token_id]),
+            torch.tensor(self.tokenizer.encode('\n')),
+            torch.tensor([self.assistant_token_id]),
             target,
             torch.tensor([self.eos_token_id])
         )).to(torch.int).reshape(1, -1)
-        source = torch.concat((
-            torch.tensor([self.bos_token_id]),
-            torch.tensor(self.prompt_prefix_tokens),
-            source,
-            torch.tensor(self.prompt_suffix_tokens)
-        )).to(torch.int).reshape(1, -1)
 
-        # Source and target are the same for decoder-only transformers
-        return source, target
+    @property
+    def prompter_token_str(self):
+        return '<|prompter|>'
+
+    @property
+    def prompter_token_id(self):
+        return self.tokenizer.encode(self.prompter_token_str, add_special_tokens=False)[0]
+
+    @property
+    def assistant_token_str(self):
+        return '<|assistant|>'
+
+    @property
+    def assistant_token_id(self):
+        return self.tokenizer.encode(self.assistant_token_str, add_special_tokens=False)[0]
 
 
 class CRD3BatchCollator:

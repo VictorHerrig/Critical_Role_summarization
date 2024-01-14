@@ -65,3 +65,17 @@ class QuantModelFactory:
             model_path='mistralai/Mistral-7B-v0.1',
             attn_implementation='flash_attention_2'
         )
+
+    @staticmethod
+    def mistrallite():
+        return QuantModelFactory.load(
+            model_path='amazon/MistralLite'
+        )
+
+    @staticmethod
+    def mistrallite_flash():
+        return QuantModelFactory.load(
+            model_path='amazon/MistralLite',
+            attn_implementation='flash_attention_2'
+        )
+

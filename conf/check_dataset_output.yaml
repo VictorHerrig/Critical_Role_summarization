@@ -6,7 +6,7 @@ CRD3_path: 'CRD3/data/aligned data/c=4/'
 # Number of aligned data files into which each episode is split. This corresponds to c=n in the CRD3 path
 files_per_episode: 4
 # Path to the file containing the stems of train files
-idx_file: 'data/check_files'
+idx_file: 'data/train_files'
 # Number of summaries present in the datasets (to avoid calculation of dataset length)
 n_summary: ''
 # Size of the chunk buffer of the dataset. Large buffers will allow for randomization over more files, but will consume
@@ -17,13 +17,7 @@ max_seq_len: 2048  # 1024
 # Prompt prefix
 # TODO: Description
 prompt_prefix: "The following is an excerpt from a show in which multiple actors are playing Dungeons and
-Dragons. Write a summary of the script. When the actors are talking out of character, use the actor's names in the
-summary. Then the actors are talking in-character, use the character's names in the summary. For instance the script
-'TRAVIS: I go into the tavern and scream \"I like to drink ale!\"'
-May be summarized as 'Grog says he likes ale.',
-but the script 'TRAVIS: Laura likes to drink ale!'
-may be summarized as 'Travis says Laura likes ale.'\n\
-The script to be summarized follows:\n"
+Dragons:\n\n"
 # TODO: More description
 # Short version
 #prompt_prefix: "The following is an excerpt from a show in which multiple actors are playing Dungeons and
@@ -31,8 +25,19 @@ The script to be summarized follows:\n"
 #summary. Then the actors are talking in-character, use the character's names in the summary. The script to be
 #summarized follows:\n"
 # TODO: Description
-prompt_suffix: "\nThat is the end of the script. The summary of that script begins here:\n\n"
+prompt_suffix: "\nThat is the end of the script.\n\
+Write a summary of the script, making sure to include the major events contained within. When the actors are talking
+out-of-character, use the actor's names in the summary. When the actors are talking in-character, use the character's
+names in the summary. For instance the script\n\
+'TRAVIS: I go into the tavern and scream \"I like to drink ale!\"'\n\
+should be summarized as 'Grog says he likes ale.'\n\
+but the script\n\
+'TRAVIS: Laura likes to drink ale!'\n\
+should be summarized as\n\
+'Travis says Laura likes ale.'\n
+Please summarize according to those rules\n"
 # TODO: Description
-tokenizer_path: "mistralai/Mistral-7B-v0.1"
+#tokenizer_path: "mistralai/Mistral-7B-v0.1"
+tokenizer_path: "amazon/MistralLite"
 # TODO: Description
 max_tgt_seq_len: "256"

@@ -5,11 +5,15 @@ from transformers import GenerationConfig
 
 
 from CRD3_summarization.models.HuggingfaceModels import QuantModelFactory
-from CRD3_summarization.loaders import CRD3DecoderOnlyDataset
+from CRD3_summarization.loaders import CRD3DecoderOnlyDataset, CRD3MistralLiteDataset
 
 
 def main():
-    model, tokenizer = QuantModelFactory.mistral_7b()
+    # dataset = CRD3DecoderOnlyDataset('conf/check_dataset_output.yaml')
+    dataset = CRD3MistralLiteDataset('conf/check_dataset_output.yaml')
+
+    model, tokenizer = QuantModelFactory.mistrallite()
+    # model, tokenizer = QuantModelFactory.mistrallite_flash()
     # model, tokenizer = QuantModelFactory.mistral_7b_flash()
 
     print('\n------------')
@@ -19,9 +23,8 @@ def main():
         print(f'{param_name}: {tuple(param.shape)}')
     print(f'\n\nTokenizer vocab size: {tokenizer.vocab_size}')
 
-    decoder_only_ds = CRD3DecoderOnlyDataset('conf/check_dataset_output.yaml')
-    prompt, _ = decoder_only_ds[0]
-    prompt_str = decoder_only_ds.construct_string(prompt.squeeze())
+    prompt, _ = dataset[33 * 4 - 1]
+    prompt_str = dataset.construct_string(prompt.squeeze())
 
     print('\n-----------')
     print('   Prompt')
@@ -34,9 +37,9 @@ def main():
     generation_config = GenerationConfig(
         max_new_tokens=512,
         num_beams=1,
-        eos_token_id=decoder_only_ds.eos_token_id,
-        bos_token_id=decoder_only_ds.bos_token_id,
-        pad_token_id=decoder_only_ds.pad_token_id
+        eos_token_id=dataset.eos_token_id,
+        bos_token_id=dataset.bos_token_id,
+        pad_token_id=dataset.pad_token_id
     )
 
     prompt = prompt.to(model.device)
@@ -60,7 +63,7 @@ def main():
     print(f'Sequence')
     print('----------\n\n')
     print(f'Output:\n\n')
-    print(decoder_only_ds.construct_string(output.squeeze()))
+    print(dataset.construct_string(output.squeeze()))
     print('\n\n')
 
 
