@@ -5,7 +5,6 @@ from os import listdir, path
 from typing import Iterator, Optional
 
 import numpy as np
-import pandas as pd  # TODO: Replace with own function to remove requirement
 import torch
 import yaml
 from numpy import ceil
@@ -17,7 +16,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 # TODO: Experiment with adding summaries from previous chunks to prompt prefix
 
 
-class CRD3Dataset(IterableDataset, abc.ABC):
+class BaseCRD3Dataset(IterableDataset, abc.ABC):
     def __init__(
             self,
             cfg_file: str
@@ -39,7 +38,8 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         # Load filenames from the input directory present in the index file
         if 'idx_file' in self._cfg:
             idx_file = path.abspath(self._cfg['idx_file'])
-            file_subset = pd.read_csv(idx_file).values.squeeze().tolist()
+            with open(idx_file, 'r') as f:
+                file_subset = [str(line) for line in f]
             self._files = [path.join(self.indir, fn) for fn in listdir(self.indir)
                            if 'json' in fn and fn.split('_')[0] in file_subset]
         else:
@@ -48,7 +48,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         self._files = np.array(self._files)
 
         # Prepare text processing objects
-        self._max_seq_len = self._cfg['max_src_seq_len']
+        self._max_seq_len = self._cfg['max_seq_len']
 
         self._tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(self._cfg['tokenizer_path'])
 
@@ -64,34 +64,41 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         self._prompt_suffix_tensor = None
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-        # Summary-turn pairs are grouped in JSON files
-        # To avoid repeating samples in the same order, use a buffer to pull samples across multiple JSON files
-        # Why did they remove the buffered dataset class? ... ¯\_(ツ)_/¯
+        for turn_strings, summary_string in self.iter_strings():
+            yield self._prepare_data(turn_strings, summary_string)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._prepare_data(*self.get_strings(idx))
+
+    def iter_strings(self) -> Iterator[tuple[list[str], str]]:
         buffer = []
         for speaker_strings, turn_strings, summary_string in self.iter_chunk(shuffle=True):
             # Make sure there are no empty strings
             # TODO: WARN logging
-            if len(summary_string) <= 0: continue
-            speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
-                                                  if len(s) > 0 and len(t) > 0])
-            if len(speaker_strings) <= 0 or len(turn_strings) <= 0: continue
+            if len(summary_string) <= 0:
+                continue
+            turn_strings = [f'{s}: {t}\n' for s, t in zip(speaker_strings, turn_strings)
+                            if len(s) > 0 and len(t) > 0]
+            if len(turn_strings) <= 0:
+                continue
 
-            buffer.append((speaker_strings, turn_strings, summary_string))
+            buffer.append((turn_strings, summary_string))
             if len(buffer) > self.buffer_size:
-                yield self._prepare_data(*buffer.pop(np.random.randint(0, len(buffer), 1).item()))
+                yield buffer.pop(np.random.randint(0, len(buffer), 1).item())
 
         # Finish out the buffer after all samples have been pulled
         for i in np.random.permutation(np.arange(len(buffer))):
-            speaker_samp, turn_samp, summary_samp = buffer[i]
-            yield self._prepare_data(speaker_samp, turn_samp, summary_samp)
+            turn_samp, summary_samp = buffer[i]
+            yield turn_samp, summary_samp
+
         buffer.clear()
 
-    def __getitem__(self, idx):
+    def get_strings(self, idx: int) -> tuple[list[str], str]:
         if idx >= len(self._files):
             raise IndexError('Index out of range of files')
 
         # Load file of this index and take the first chunk
-        json_iter = CRD3Dataset.parse_json(self._files[idx])
+        json_iter = BaseCRD3Dataset.parse_json(self._files[idx])
         speaker_strings, turn_strings, summary_string = next(json_iter)
 
         # Retry until a non-empty summary appears
@@ -102,12 +109,12 @@ class CRD3Dataset(IterableDataset, abc.ABC):
             raise ValueError(f'No valid summary in file index {idx} {self._files[idx]}')
 
         # If the turns and/or speakers and all empty, raise error
-        speaker_strings, turn_strings = zip(*[(s, t) for s, t in zip(speaker_strings, turn_strings)
-                                              if len(s) > 0 and len(t) > 0])
-        if len(speaker_strings) <= 0 or len(turn_strings) <= 0:
+        turn_strings = [f'{s}: {t}\n' for s, t in zip(speaker_strings, turn_strings)
+                                         if len(s) > 0 and len(t) > 0]
+        if len(turn_strings) <= 0:
             raise ValueError(f'No valid turn strings in file index {idx} {self._files[idx]}')
 
-        return self._prepare_data(speaker_strings, turn_strings, summary_string)
+        return turn_strings, summary_string
 
     def construct_string(self, token_idxs: torch.Tensor) -> str:
         """Builds a string from a list of token indices.
@@ -120,7 +127,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         -------
 
         """
-        return str.replace(self.tokenizer.decode(token_idxs.tolist(), skip_special_tokens=False), 'Ġ', ' ')
+        return str.replace(self.tokenizer.decode(token_idxs, skip_special_tokens=False), 'Ġ', ' ')
     
     @abc.abstractmethod
     def _build_inputs(
@@ -132,18 +139,15 @@ class CRD3Dataset(IterableDataset, abc.ABC):
 
     def _prepare_data(
             self,
-            speaker_strings: list[str],
             turn_strings: list[str],
             summary_string: str
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Takes sample strings and converts them to encoded vectors. The targets consist of a tensor of stacked one-hot
-        encodings for each summary token. The data consist of a tensor of stacked vecors, each of which is a
+        encodings for each summary token. The data consist of a tensor of stacked vectors, each of which is a
         concatenation of a multi-hot speaker encoding with a one-hot token encoding.
 
         Parameters
         ----------
-        speaker_strings: list[str]
-            List of space-separated strings containing speaker name(s).
         turn_strings: list[str]
             List of strings containing turn string.
         summary_string: str
@@ -158,12 +162,8 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         target: torch.Tensor
             Stacked one-hot token encodings of summary_string of dimension (tgt_seq_len, vocab_size).
         """
-        def tokenize_turn(turn_speaker_str, turn_str):
-            return self.tokenizer.encode(turn_speaker_str + ':\n' + turn_str + '\n')
-
-        # Tokenize script and summary
-        src_turn_tokens = [tokenize_turn(*turn_pair) for turn_pair in zip(speaker_strings, turn_strings)]
-        summary_tokens = self.tokenizer.encode(summary_string)
+        src_turn_tokens = [self.tokenizer.encode(turn_string, add_special_tokens=False) for turn_string in turn_strings]
+        summary_tokens = self.tokenizer.encode(summary_string, add_special_tokens=False)
 
         # Build tensors according to subclass
         return self._build_inputs(src_turn_tokens, summary_tokens)
@@ -189,7 +189,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
             String representing the summary of the chunk.
         """
         for filename in self._iter_files(shuffle):
-            yield from CRD3Dataset.parse_json(filename)
+            yield from BaseCRD3Dataset.parse_json(filename)
 
     def iter_chunk_w_filename(
             self,
@@ -214,7 +214,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
             String representing the summary of the chunk.
         """
         for filename in self._iter_files(shuffle):
-            for speaker_strings, turn_strings, summary_string in CRD3Dataset.parse_json(filename):
+            for speaker_strings, turn_strings, summary_string in BaseCRD3Dataset.parse_json(filename):
                 yield filename, speaker_strings, turn_strings, summary_string
 
     def _iter_files(
@@ -274,7 +274,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
             for chunk in json_data:
                 # Load summary, speaker and utterance strings
                 summary_string: str = chunk['CHUNK']
-                speaker_strings, turn_strings = zip(*[(', '.join(t['NAMES']), ' '.join(t['UTTERANCES']))
+                speaker_strings, turn_strings = zip(*[(' and '.join(t['NAMES']), ' '.join(t['UTTERANCES']))
                                                       for t in chunk['TURNS']])
                 yield speaker_strings, turn_strings, summary_string
 
@@ -299,27 +299,43 @@ class CRD3Dataset(IterableDataset, abc.ABC):
 
     @property
     def vocab_size(self):
-        return self.tokenizer.get_vocab_size()
+        return self.tokenizer.vocab_size
 
     @property
     def pad_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.pad_token)[0]
+        return self.tokenizer.encode(self.tokenizer.pad_token, add_special_tokens=False)[0]
 
     @property
     def unk_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.unk_token)[0]
+        return self.tokenizer.encode(self.tokenizer.unk_token, add_special_tokens=False)[0]
 
     @property
     def bos_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.bos_token)[0]
+        return self.tokenizer.encode(self.tokenizer.bos_token, add_special_tokens=False)[0]
+
+    @property
+    def eos_token(self) -> int:
+        return self.tokenizer.encode(self.tokenizer.eos_token, add_special_tokens=False)[0]
+
+    @property
+    def pad_token_string(self) -> str:
+        return self.tokenizer.pad_token
+
+    @property
+    def unk_token_string(self) -> str:
+        return self.tokenizer.unk_token
+
+    @property
+    def bos_token_string(self) -> str:
+        return self.tokenizer.bos_token
+
+    @property
+    def eos_token_string(self) -> str:
+        return self.tokenizer.eos_token
 
     @property
     def bos_token_tensor(self):
         return one_hot(torch.tensor([self.bos_token]), num_classes=self.vocab_size).to(torch.bfloat16)
-
-    @property
-    def eos_token(self) -> int:
-        return self.tokenizer.encode(self.tokenizer.eos_token)[0]
 
     @property
     def eos_token_tensor(self):
@@ -332,7 +348,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
     @property
     def prompt_prefix_tokens(self) -> list[int]:
         if self._prompt_prefix_tokens is None:
-            self._prompt_prefix_tokens = self.tokenizer.encode(self.prompt_prefix)
+            self._prompt_prefix_tokens = self.tokenizer.encode(self.prompt_prefix, add_special_tokens=False)
         return self._prompt_prefix_tokens
 
     @property
@@ -350,7 +366,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
     @property
     def prompt_suffix_tokens(self) -> list[int]:
         if self._prompt_suffix_tokens is None:
-            self._prompt_suffix_tokens = self.tokenizer.encode(self.prompt_suffix)
+            self._prompt_suffix_tokens = self.tokenizer.encode(self.prompt_suffix, add_special_tokens=False)
         return self._prompt_suffix_tokens
 
     @property
@@ -362,7 +378,7 @@ class CRD3Dataset(IterableDataset, abc.ABC):
         return self._prompt_suffix_tensor
 
 
-class CRD3EncoderDecoderDataset(CRD3Dataset):
+class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
     def __init__(
             self,
             cfg_file: str
@@ -370,14 +386,13 @@ class CRD3EncoderDecoderDataset(CRD3Dataset):
         super().__init__(cfg_file)
         self._max_tgt_seq_len = self._cfg['max_tgt_seq_len']
 
-
     def _build_inputs(
             self,
             source_turn_tokens: list[list[int]],
             summary_tokens: list[int]
     ) -> (torch.Tensor, torch.Tensor):
         """
-        
+
         Parameters
         ----------
         source_turn_tokens
@@ -421,7 +436,7 @@ class CRD3EncoderDecoderDataset(CRD3Dataset):
         return self._max_tgt_seq_len
 
 
-class CRD3DecoderOnlyDataset(CRD3Dataset):
+class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
     def _build_inputs(
             self,
             source_turn_tokens: list[list[int]],
@@ -474,22 +489,20 @@ class CRD3BatchCollator:
 
     def __call__(
             self,
-            samples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        source, speaker, target = zip(*samples)
+            samples: list[tuple[torch.Tensor, torch.Tensor]]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        source, target = zip(*samples)
         source, src_key_padding_mask = self.add_padding(source)
-        speaker = self.add_speaker_padding(speaker)
         target, tgt_key_padding_mask = self.add_padding(target)
 
-        # Tokens/speakers: (seq_len, bsz, model_dim)
+        # Tokens: (seq_len, bsz, model_dim)
         # Padding: (bsz, seq_len, model_dim)
-        return source, speaker, target, src_key_padding_mask, tgt_key_padding_mask
+        return source, target, src_key_padding_mask, tgt_key_padding_mask
 
     def add_padding(self, inputs: list[torch.Tensor]) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         # Seq len must be a multiple of window_size for sliding chunk MM in local attention
         max_len = max([t.size(0) for t in inputs])
         max_len = ((max_len // self.window_size) + int(max_len % self.window_size != 0)) * self.window_size
-        #max_len += self.window_size - (max_len % self.window_size) if max_len % self.window_size != 0 else 0
         vocab_size = inputs[0].size(-1)
 
         if any([max_len - t.size(0) > 0 for t in inputs]):
@@ -511,21 +524,3 @@ class CRD3BatchCollator:
 
         # Create a batch axis at axis 1
         return torch.stack(output, dim=1), padding_mask
-
-    def add_speaker_padding(self, inputs: list[torch.Tensor]) -> torch.Tensor:
-        # Shapes
-        max_len = max([t.size(0) for t in inputs])
-        max_len = ((max_len // self.window_size) + int(max_len % self.window_size != 0)) * self.window_size
-        vocab_size = inputs[0].size(-1)
-
-        output = list(inputs)
-
-        # Fill with all zeros
-        for i, t in enumerate(output):
-            pad_amt = max_len - t.size(0)
-            if pad_amt > 0:
-                padding = torch.zeros((pad_amt, vocab_size), dtype=torch.bfloat16)
-                output[i] = torch.concat((t, padding), dim=0)
-
-        # Create a batch axis at axis 1
-        return torch.stack(output, dim=1)
