@@ -34,7 +34,7 @@ class QuantModelFactory:
         # Override quant defaults if provided
         default_quant_config = dict(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=torch.float16,  # bfloat16,  <- My GPU is Turing...
             bnb_4bit_use_double_quant=True
         )
         quant_config = quant_config if quant_config is not None else default_quant_config
@@ -44,38 +44,42 @@ class QuantModelFactory:
         tokenizer = AutoTokenizer.from_pretrained(
             model_path if tokenizer_path is None else tokenizer_path
         )
+        # Override default kwargs with passed kwargs
+        arg_dict = dict(dict(quantization_config=quant_config, device_map='auto'), **kwargs)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            quantization_config=quant_config,
-            device_map='auto',
-            **kwargs
+            **arg_dict
         )
 
         return model, tokenizer
 
     @staticmethod
-    def mistral_7b():
-        return QuantModelFactory.load(
-            model_path='mistralai/Mistral-7B-v0.1'
-        )
-
-    @staticmethod
-    def mistral_7b_flash():
+    def mistral_7b(**kwargs):
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
-            attn_implementation='flash_attention_2'
+            **kwargs
         )
 
     @staticmethod
-    def mistrallite():
+    def mistral_7b_flash(**kwargs):
         return QuantModelFactory.load(
-            model_path='amazon/MistralLite'
+            model_path='mistralai/Mistral-7B-v0.1',
+            attn_implementation='flash_attention_2',
+            **kwargs
         )
 
     @staticmethod
-    def mistrallite_flash():
+    def mistrallite(**kwargs):
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
-            attn_implementation='flash_attention_2'
+            **kwargs
+        )
+
+    @staticmethod
+    def mistrallite_flash(**kwargs):
+        return QuantModelFactory.load(
+            model_path='amazon/MistralLite',
+            attn_implementation='flash_attention_2',
+            **kwargs
         )
 
