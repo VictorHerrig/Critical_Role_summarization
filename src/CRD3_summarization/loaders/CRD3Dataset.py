@@ -65,7 +65,10 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         for turn_strings, summary_string in self.iter_strings():
-            yield self._prepare_data(turn_strings, summary_string)
+            try:
+                yield self._prepare_data(turn_strings, summary_string)
+            except ValueError:
+                continue
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         return self._prepare_data(*self.get_strings(idx))
@@ -97,8 +100,6 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
         if idx >= len(self._files):
             raise IndexError('Index out of range of files')
 
-        print(self._files[idx])
-        input()
         # Load file of this index and take the first chunk
         json_iter = BaseCRD3Dataset.parse_json(self._files[idx])
         speaker_strings, turn_strings, summary_string = next(json_iter)
@@ -395,6 +396,22 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
             ).to(torch.int)
         return self._prompt_suffix_tensor
 
+    @property
+    def inst_open_ids(self):
+        return self.tokenizer.encode('[INST]', add_special_tokens=False)
+
+    @property
+    def inst_open_len(self):
+        return len(self.inst_open_ids)
+
+    @property
+    def inst_close_ids(self):
+        return self.tokenizer.encode('[/INST]', add_special_tokens=False)
+
+    @property
+    def inst_close_len(self):
+        return len(self.inst_close_ids)
+
 
 class CRD3EncoderDecoderDataset(BaseCRD3Dataset):
     def __init__(
@@ -496,12 +513,14 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
     ) -> torch.Tensor:
         return torch.concat((
             torch.tensor([self.bos_token_id]),
+            torch.tensor(self.inst_open_ids),
             torch.tensor(self.prompt_prefix_tokens),
             source,
             torch.tensor(self.prompt_suffix_tokens),
+            torch.tensor(self.inst_close_ids),
             target,
             torch.tensor([self.eos_token_id])
-        )).to(torch.int).reshape(1, -1)
+        )).to(torch.int16)#.reshape(1, -1)
 
     def _build_inputs(
             self,
@@ -522,12 +541,16 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
         # Check if the script fits within the max sequence length - 2 (for BOs and EOS)
         num_source_tokens = [len(s) for s in source_turn_tokens]
         total_source_tokens = sum(num_source_tokens)
-        max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens) - len(summary_tokens)
+        max_len = self.max_seq_len - 2 - len(self.prompt_prefix_tokens) - len(self.prompt_suffix_tokens) - \
+                  len(summary_tokens) - self.inst_open_len - self.inst_close_len
         if total_source_tokens > max_len:
             # Truncate turns from the beginning of the script until it fits in the max sequence length if needed
             cum_seq_len = np.cumsum(num_source_tokens[::-1])
             first_idx = len(num_source_tokens) - np.searchsorted(cum_seq_len, max_len)
             source_turn_tokens = source_turn_tokens[first_idx:]  # TODO: If empty
+
+        if len(source_turn_tokens) <= 0:
+            raise ValueError('No valid source string')
 
         # One-hot the combined turns with BOS and EOS
         source_turn_tokens = np.concatenate(source_turn_tokens)
@@ -538,7 +561,12 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
         target_output = self._build_target(source, target)
 
         # Source and target are the same for decoder-only transformers
-        return input_prompt, target_output
+        #return input_prompt, target_output
+        # return {'text': self.construct_string(target_output)}
+        return {
+            'input_ids': target_output,
+            'labels': target_output.clone()
+        }
 
 
 class CRD3MistralLiteDataset(CRD3DecoderOnlyDataset):
@@ -547,14 +575,6 @@ class CRD3MistralLiteDataset(CRD3DecoderOnlyDataset):
             source: torch.Tensor,
             target: torch.Tensor
     ) -> torch.Tensor:
-        print(
-            torch.tensor([self.prompter_token_id]).size(),
-            torch.tensor(self.prompt_prefix_tokens).size(),
-            source.size(),
-            torch.tensor(self.prompt_suffix_tokens).size(),
-            torch.tensor([self.eos_token_id]).size(),
-            torch.tensor([self.assistant_token_id]).size()
-        )
         return torch.concat((
             torch.tensor([self.prompter_token_id]),
             torch.tensor(self.prompt_prefix_tokens),
@@ -580,7 +600,7 @@ class CRD3MistralLiteDataset(CRD3DecoderOnlyDataset):
             torch.tensor([self.assistant_token_id]),
             target,
             torch.tensor([self.eos_token_id])
-        )).to(torch.int).reshape(1, -1)
+        )).to(torch.int16)#.reshape(1, -1)
 
     @property
     def prompter_token_str(self):
@@ -625,7 +645,6 @@ class CRD3BatchCollator:
         if any([max_len - t.size(0) > 0 for t in inputs]):
             # Create padding masks
             padding_mask = torch.stack([(torch.arange(max_len) >= t.size(0)).to(torch.bool) for t in inputs], dim=0)
-            # print(padding_mask.shape)
         else:
             padding_mask = None
 

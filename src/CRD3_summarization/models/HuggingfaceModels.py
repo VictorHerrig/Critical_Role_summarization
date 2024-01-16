@@ -4,6 +4,8 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import BitsAndBytesConfig
 
+from unsloth import FastLanguageModel
+
 
 class QuantModelFactory:
     @staticmethod
@@ -34,48 +36,64 @@ class QuantModelFactory:
         # Override quant defaults if provided
         default_quant_config = dict(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True
+            #bnb_4bit_compute_dtype=torch.float16,  # bfloat16,  <- My GPU is Turing...
+            #bnb_4bit_use_double_quant=True,
+            device_map='auto'  # TODO: Check
         )
         quant_config = quant_config if quant_config is not None else default_quant_config
-        quant_config = BitsAndBytesConfig(**quant_config)
+        # quant_config = BitsAndBytesConfig(**quant_config)
 
         # Load model and tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path if tokenizer_path is None else tokenizer_path
-        )
-        model = AutoModelForCausalLM.from_pretrained(
+        # tokenizer = AutoTokenizer.from_pretrained(
+        #     model_path if tokenizer_path is None else tokenizer_path
+        # )
+        # Override default kwargs with passed kwargs
+        # arg_dict = dict(dict(quantization_config=quant_config, device_map='auto'), **kwargs)
+        arg_dict = dict(quant_config, **kwargs)
+        # model = AutoModelForCausalLM.from_pretrained(
+        #     model_path,
+        #     **arg_dict
+        # )
+        model, tokenizer = FastLanguageModel.from_pretrained(
             model_path,
-            quantization_config=quant_config,
-            device_map='auto',
-            **kwargs
+            **arg_dict
         )
 
         return model, tokenizer
 
     @staticmethod
-    def mistral_7b():
-        return QuantModelFactory.load(
-            model_path='mistralai/Mistral-7B-v0.1'
-        )
-
-    @staticmethod
-    def mistral_7b_flash():
+    def mistral_7b(**kwargs):
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
-            attn_implementation='flash_attention_2'
+            **kwargs
         )
 
     @staticmethod
-    def mistrallite():
+    def mistral_7b_flash(**kwargs):
         return QuantModelFactory.load(
-            model_path='amazon/MistralLite'
+            model_path='mistralai/Mistral-7B-v0.1',
+            attn_implementation='flash_attention_2',
+            **kwargs
         )
 
     @staticmethod
-    def mistrallite_flash():
+    def mistrallite(**kwargs):
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
-            attn_implementation='flash_attention_2'
+            **kwargs
         )
 
+    @staticmethod
+    def mistrallite_flash(**kwargs):
+        return QuantModelFactory.load(
+            model_path='amazon/MistralLite',
+            attn_implementation='flash_attention_2',
+            **kwargs
+        )
+
+    @staticmethod
+    def mistral_7b_unsloth_4bit(**kwargs):
+        return QuantModelFactory.load(
+            model_path='unsloth/mistral-7b-bnb-4bit',
+            **kwargs
+        )
