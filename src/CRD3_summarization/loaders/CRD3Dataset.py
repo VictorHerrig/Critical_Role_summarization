@@ -102,7 +102,12 @@ class BaseCRD3Dataset(IterableDataset, abc.ABC):
 
         # Load file of this index and take the first chunk
         json_iter = BaseCRD3Dataset.parse_json(self._files[idx])
-        speaker_strings, turn_strings, summary_string = next(json_iter)
+        all_speaker_strings, all_turn_strings, all_summary_string = \
+            zip(*[(spkr, turn, summ) for spkr, turn, summ in json_iter])
+        chunk_idx = np.random.randint(0, len(all_turn_strings) - 1)
+        speaker_strings = all_speaker_strings[chunk_idx]
+        turn_strings = all_turn_strings[chunk_idx]
+        summary_string = all_summary_string[chunk_idx]
 
         # Retry until a non-empty summary appears
         try:
@@ -520,7 +525,7 @@ class CRD3DecoderOnlyDataset(BaseCRD3Dataset):
             torch.tensor(self.inst_close_ids),
             target,
             torch.tensor([self.eos_token_id])
-        )).to(torch.int16)#.reshape(1, -1)
+        )).to(torch.int)#.reshape(1, -1)
 
     def _build_inputs(
             self,
@@ -600,7 +605,7 @@ class CRD3MistralLiteDataset(CRD3DecoderOnlyDataset):
             torch.tensor([self.assistant_token_id]),
             target,
             torch.tensor([self.eos_token_id])
-        )).to(torch.int16)#.reshape(1, -1)
+        )).to(torch.int)#.reshape(1, -1)
 
     @property
     def prompter_token_str(self):
