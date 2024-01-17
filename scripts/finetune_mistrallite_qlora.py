@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 
 from CRD3_summarization.models.HuggingfaceModels import QuantModelFactory
-from CRD3_summarization.loaders import CRD3MistralLiteDataset, CRD3DecoderOnlyDataset
+from CRD3_summarization.datasets import CRD3MistralLiteDataset, CRD3DecoderOnlyDataset
 
 from transformers import Trainer, TrainingArguments
 

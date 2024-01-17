@@ -8,7 +8,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from CRD3_summarization.loaders.CRD3Dataset import BaseCRD3Dataset, CRD3BatchCollator
+from CRD3_summarization.datasets.CRD3Datasets import BaseCRD3Dataset, CRD3BatchCollator
 from CRD3_summarization.models.Trainer import Trainer
 from CRD3_summarization.models.CRD3SummarizationModel import CRD3SummarizationModel
 
@@ -38,10 +38,10 @@ def main(
     bart_model_path = '../../code/models/bart.base/model.pt'
 
     # Create dataloaders
-    train_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_train.yaml')
+    train_dataset = BaseCRD3Dataset('../src/CRD3_summarization/datasets/CRD3Dataset_train.yaml')
     train_collator = CRD3BatchCollator(train_dataset.pad_token_id, window_size)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=train_collator, num_workers=n_workers_loader)
-    val_dataset = BaseCRD3Dataset('../src/CRD3_summarization/loaders/CRD3Dataset_val.yaml')
+    val_dataset = BaseCRD3Dataset('../src/CRD3_summarization/datasets/CRD3Dataset_val.yaml')
     val_collator = CRD3BatchCollator(val_dataset.pad_token_id, window_size)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=val_collator, num_workers=n_workers_loader)
 

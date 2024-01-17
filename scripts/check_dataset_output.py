@@ -1,87 +1,76 @@
 # Simple script to manually check the dataset output. Run from the root directory.
 
 
-import torch
+from numpy.random import randint
 
-from CRD3_summarization.loaders import CRD3EncoderDecoderDataset, CRD3DecoderOnlyDataset
+from CRD3_summarization.CRD3Datasets import EncoderDecoderCRD3Dataset, MistralCRD3Dataset
 
 
 def main():
-    encoder_decoder_ds = CRD3EncoderDecoderDataset('conf/check_dataset_output.yaml')
-    decoder_only_ds = CRD3DecoderOnlyDataset('conf/check_dataset_output.yaml')
+    encoder_decoder_ds = EncoderDecoderCRD3Dataset('conf/CRD3Dataset_test.yaml')
+    mistral_ds = MistralCRD3Dataset('conf/CRD3Dataset_test.yaml')
+
+    idx = randint(0, len(mistral_ds) - 1)
 
     print('===================================')
     print('encoder-decoder string output:')
     print('===================================\n\n')
-    turn_list, summ_str = encoder_decoder_ds.get_strings(0)
-    turn_str = ''.join(turn_list)
-    print('\n-----------')
-    print('   Turn')
-    print('-----------\n')
-    print(turn_str)
+    d = encoder_decoder_ds[idx]
+    source_str = d['text']
+    summ_str = d['summary']
+    source_ids = d['input_ids']
+    summ_ids = d['labels']
+    decoded_source_str = encoder_decoder_ds.tokenizer.decode(source_ids, skip_special_tokens=False)
+    decoded_summ_str = encoder_decoder_ds.tokenizer.decode(summ_ids, skip_special_tokens=False)
+    print('\n-------------------')
+    print('      Source')
+    print('-------------------\n')
+    print(source_str)
     print()
-    print('\n-----------')
-    print('  Summary')
-    print('-----------\n')
+    print('\n-------------------')
+    print('      Summary')
+    print('-------------------\n')
     print(summ_str)
     print()
-    print(encoder_decoder_ds.prompt_prefix)
-    print(encoder_decoder_ds.prompt_suffix)
-    input()
-
-    print('\n\n===================================')
-    print('encoder-decoder decoded output:')
-    print('===================================\n\n')
-    turn_onehot, summ_onehot = encoder_decoder_ds[0]
-    turn_tokens = torch.argmax(turn_onehot, 1)
-    summ_tokens = torch.argmax(summ_onehot, 1)
-    turn_str = encoder_decoder_ds.construct_string(turn_tokens)
-    summ_str = encoder_decoder_ds.construct_string(summ_tokens)
-    print('\n-----------')
-    print('   Turn')
-    print('-----------\n')
-    print(turn_str)
+    print('\n-------------------')
+    print('  Decoded Source')
+    print('-------------------\n')
+    print(decoded_source_str)
     print()
-    print('\n-----------')
-    print('  Summary')
-    print('-----------\n')
-    print(summ_str)
+    print('\n-------------------')
+    print('  Decoded Summary  ')
+    print('-------------------\n')
+    print(decoded_summ_str)
     input()
 
     print('\n\n===================================')
     print('decoder-only string output:')
     print('===================================\n\n')
-    turn_list, summ_str = decoder_only_ds.get_strings(0)
-    turn_str = ''.join(turn_list)
-    print('\n-----------')
-    print('   Turn')
-    print('-----------\n')
-    print(turn_str)
+    d = mistral_ds[idx]
+    sequence_str = d['text']
+    prompt_str = d['prompt']
+    summ_str = d['summary']
+    sequence_ids = d['input_ids']
+    decoded_sequence = mistral_ds.tokenizer.decode(sequence_ids, skip_special_tokens=False)
+    print('\n-------------------')
+    print('      Prompt')
+    print('-------------------\n')
+    print(prompt_str)
     print()
-    print('\n-----------')
-    print('  Summary')
-    print('-----------\n')
+    print('\n-------------------')
+    print('      Summary')
+    print('-------------------\n')
     print(summ_str)
-    input()
-
-    print('\n\n===================================')
-    print('decoder-only decoded output:')
-    print('===================================\n\n')
-    turn_onehot, summ_onehot = decoder_only_ds[0]
-    turn_tokens = torch.argmax(turn_onehot, 1)
-    summ_tokens = torch.argmax(summ_onehot, 1)
-    turn_str = encoder_decoder_ds.construct_string(turn_tokens)
-    summ_str = encoder_decoder_ds.construct_string(summ_tokens)
-    print('\n-----------')
-    print('   Turn')
-    print('-----------\n')
-    print(turn_str)
     print()
-    print('\n-----------')
-    print('  Summary')
-    print('-----------\n')
-    print(summ_str)
-    input()
+    print('\n-------------------')
+    print('      Sequence')
+    print('-------------------\n')
+    print(sequence_str)
+    print()
+    print('\n-------------------')
+    print(' Decoded Sequence')
+    print('-------------------\n')
+    print(decoded_sequence)
 
 
 if __name__ == '__main__':
