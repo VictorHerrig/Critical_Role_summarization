@@ -99,23 +99,10 @@ class TopDownEncoderSubBlock(nn.Module):
         key_padding_mask = key_padding_mask.to(torch.bool) if key_padding_mask is not None else None
         token_self_attn = self._local_self_attn(val, key_padding_mask=key_padding_mask)
 
-        # TODO: Attention mask without exploding memory
-        # top_lvl_seq_len, bsz, _ = top_level_tokens.size()
-        # seq_len = key_padding_mask.size(1)
-        # print(key_padding_mask.size(), top_lvl_seq_len, bsz, self._n_heads)
-        # attn_mask = key_padding_mask[None, :, :, None].expand(self._n_heads, -1, -1, top_lvl_seq_len)  # For masking bottom-level sequences
-        # attn_mask
-        # print(attn_mask.size())
-        # #attn_mask = attn_mask.permute(2, 0, 1, 3)  # (n_head, bsz, top_lvl, bottom_lvl)
-        # attn_mask = attn_mask.reshape(self._n_heads * bsz, -1, top_lvl_seq_len)  # (n_head * bsz, top_lvl, bottom_lvl)
-        # print(token_self_attn.size(), attn_mask.size())
-        # print(attn_mask.sum(-1).sum(-1).cumsum(0))
-
         token_segment_cross_attn = self._full_cross_attn(token_self_attn,  # Query
                                                          top_level_tokens,  # Key
                                                          top_level_tokens,  # Value
-                                                         key_padding_mask=top_lvl_key_mask)#,
-                                                         #attn_mask=attn_mask)
+                                                         key_padding_mask=top_lvl_key_mask)
         if isinstance(token_segment_cross_attn, tuple):
             token_segment_cross_attn = token_segment_cross_attn[0]
         # Note! The paper _specifically_ notes the residual connection is applied after the layer norm

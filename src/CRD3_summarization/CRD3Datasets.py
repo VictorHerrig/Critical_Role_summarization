@@ -1,17 +1,14 @@
 """Defines a Dataset for parsing and iterating over CRD3 data."""
 import abc
-import json
-from typing import Iterator, Optional
+from typing import Iterator
 
 import numpy as np
 import torch
 import yaml
-from numpy import ceil
-from transformers import PreTrainedTokenizer, AutoTokenizer
-from torch.nn.functional import one_hot
-from torch.utils.data import Dataset, get_worker_info
-
 from datasets import load_dataset, Dataset as HFDataset
+from torch.nn.functional import one_hot
+from torch.utils.data import Dataset
+from transformers import PreTrainedTokenizer, AutoTokenizer
 
 
 # TODO: Experiment with adding summaries from previous chunks to prompt prefix
