@@ -1,5 +1,6 @@
 """Defines a Dataset for parsing and iterating over CRD3 data."""
 import abc
+import re
 from typing import Iterator
 
 import numpy as np
@@ -13,21 +14,6 @@ from transformers import PreTrainedTokenizer, AutoTokenizer
 
 # TODO: Experiment with adding summaries from previous chunks to prompt prefix
 # Possibly using something like <s> [SYS] <summary of last n chunks> [/SYS][INST] <prompt> [/INST] <response> </s>
-
-
-def parse_crd3_dict(dataset_dict: dict) -> tuple[list[str], str]:
-    summary_string: str = dataset_dict['chunk']
-    turns: list[dict] = dataset_dict['turns']
-
-    # Pass if there are empty strings and construct turn strings
-    if len(summary_string) <= 0:
-        raise ValueError('Empty summary string')
-    turn_strings = [f'{" and ".join(turn["names"])}: {" ".join(turn["utterances"])}\n' for turn in turns
-                    if len(turn["names"]) > 0 and len(turn["utterances"]) > 0]
-    if len(turn_strings) <= 0:
-        raise ValueError('Empty turn string')
-
-    return turn_strings, summary_string
 
 
 """ ============================= """
@@ -89,6 +75,23 @@ class BaseSummarizationDataset(Dataset, abc.ABC):
     def __len__(self):
         return len(self._dataset)
 
+    def _iter_strings(self) -> Iterator[tuple[list[str], str]]:
+        # Iterate through shuffles dataset
+        for datum in self._dataset.shuffle():
+            try:
+                turn_strings, summary_string = self._parse_data(datum)
+                yield turn_strings, summary_string
+            except ValueError:
+                continue
+
+    def _get_strings(self, idx: int) -> tuple[list[str], str]:
+        if idx >= len(self._dataset):
+            raise IndexError('Index out of range of files')
+
+        datum = self._dataset[idx]
+
+        return self._parse_data(datum)
+
     # -------------------- #
     #   Abstract Methods   #
     # -------------------- #
@@ -98,15 +101,11 @@ class BaseSummarizationDataset(Dataset, abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _get_strings(self, idx: int) -> tuple[list[str], str]:
+    def _parse_data(self, dataset_dict: dict) -> tuple[list[str], str]:
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _iter_strings(self) -> Iterator[tuple[str, str]]:
-        raise NotImplementedError()
-
-    @abc.abstractmethod
-    def _build_dict(self, source_str: str, summary_str: str) -> dict:
+    def _build_dict(self, turn_strings: list[str], summary_str: str) -> dict:
         raise NotImplementedError()
 
     # -------------------- #
@@ -348,7 +347,7 @@ class CRD3Dataset(BaseSummarizationDataset, abc.ABC):
             self,
             cfg_file: str
     ) -> None:
-        """Dataset that loads summary, speaker and utterance information from CRD3 json files.
+        """Dataset that loads summary, speaker and utterance information from the CRD3 Huggingface dataset.
 
         Parameters
         ----------
@@ -360,25 +359,61 @@ class CRD3Dataset(BaseSummarizationDataset, abc.ABC):
     def _load_dataset(self) -> HFDataset:
         return load_dataset('crd3', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['chunk']) > 1)
 
-    def _iter_strings(self) -> Iterator[tuple[list[str], str]]:
-        # Iterate through shuffles dataset
-        for datum in self._dataset.shuffle():
-            try:
-                turn_strings, summary_string = parse_crd3_dict(datum)
-                yield turn_strings, summary_string
-            except ValueError:
-                continue
+    def _parse_data(
+            self,
+            dataset_dict: dict
+    ) -> tuple[list[str], str]:
+        summary_string: str = dataset_dict['chunk']
+        turns: list[dict] = dataset_dict['turns']
 
-    def _get_strings(self, idx: int) -> tuple[list[str], str]:
-        if idx >= len(self._dataset):
-            raise IndexError('Index out of range of files')
+        # Pass if there are empty strings and construct turn strings
+        if len(summary_string) <= 0:
+            raise ValueError('Empty summary string')
+        turn_strings = [f'{" and ".join(turn["names"])}: {" ".join(turn["utterances"])}\n' for turn in turns
+                        if len(turn["names"]) > 0 and len(turn["utterances"]) > 0]
+        if len(turn_strings) <= 0:
+            raise ValueError('Empty turn string')
 
-        datum = self._dataset[idx]
+        return turn_strings, summary_string
 
-        return parse_crd3_dict(datum)
 
-    def construct_string(self, token_idxs: torch.Tensor) -> str:
-        return str.replace(self.tokenizer.decode(token_idxs, skip_special_tokens=False), 'Ġ', ' ')
+class DialogsumDataset(BaseSummarizationDataset, abc.ABC):
+    def __init__(
+            self,
+            cfg_file: str
+    ) -> None:
+        """Dataset that loads summary, speaker and utterance information from the dialogsum Huggingface dataset.
+
+        Parameters
+        ----------
+        cfg_file: str
+            Path to the configuration YAML file. See DialogsumDataset_train.yaml for configuration documentation.
+        """
+        super().__init__(cfg_file=cfg_file)
+
+    def _load_dataset(self) -> HFDataset:
+        return load_dataset('knkarthick/dialogsum', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['chunk']) > 1)
+
+    def _parse_data(
+            self,
+            dataset_dict: dict
+    ) -> tuple[list[str], str]:
+        summary_string: str = dataset_dict['summary']
+        if len(summary_string) <= 0:
+            raise ValueError('Empty summary string')
+        dialogue: str = dataset_dict['dialogue']
+        if len(dialogue) <= 0:
+            raise ValueError('Empty dialogue string')
+        turns = re.split(r'\W*(#Person_\d+#)\W*:\W*', dialogue)[1:]
+
+        # Pass if there are empty strings or an odd number of turn string, else construct turn strings
+        if len(turns) % 2 != 0:
+            raise ValueError('Invalid number of turns')
+        turn_strings = [f'{turns[i]}: {turns[i + 1]}\n' for i in range(0, len(turns), 2)]
+        if len(turn_strings) <= 0:
+            raise ValueError('Empty turn string')
+
+        return turn_strings, summary_string
 
 
 class MistralDataset(DecoderOnlyDataset, abc.ABC):
@@ -415,4 +450,16 @@ class MistralliteCRD3Dataset(MistralliteDataset, CRD3Dataset):
 
 
 class EncoderDecoderCRD3Dataset(EncoderDecoderDataset, CRD3Dataset):
+    ...
+
+
+class MistralDialogsumDataset(MistralDataset, DialogsumDataset):
+    ...
+
+
+class MistralliteDialogsumDataset(MistralliteDataset, DialogsumDataset):
+    ...
+
+
+class EncoderDecoderDialogsumDataset(EncoderDecoderDataset, DialogsumDataset):
     ...
