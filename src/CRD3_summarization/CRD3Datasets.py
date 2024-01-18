@@ -1,17 +1,14 @@
 """Defines a Dataset for parsing and iterating over CRD3 data."""
 import abc
-import json
-from typing import Iterator, Optional
+from typing import Iterator
 
 import numpy as np
 import torch
 import yaml
-from numpy import ceil
-from transformers import PreTrainedTokenizer, AutoTokenizer
-from torch.nn.functional import one_hot
-from torch.utils.data import Dataset, get_worker_info
-
 from datasets import load_dataset, Dataset as HFDataset
+from torch.nn.functional import one_hot
+from torch.utils.data import Dataset
+from transformers import PreTrainedTokenizer, AutoTokenizer
 
 
 # TODO: Experiment with adding summaries from previous chunks to prompt prefix
@@ -361,7 +358,7 @@ class CRD3Dataset(BaseSummarizationDataset, abc.ABC):
         super().__init__(cfg_file=cfg_file)
 
     def _load_dataset(self) -> HFDataset:
-        return load_dataset('crd3', split=self._cfg.get('split', 'train'))
+        return load_dataset('crd3', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['chunk']) > 1)
 
     def _iter_strings(self) -> Iterator[tuple[list[str], str]]:
         # Iterate through shuffles dataset

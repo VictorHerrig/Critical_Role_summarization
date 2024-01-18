@@ -1,8 +1,6 @@
 import torch
 import transformers
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers import BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from unsloth import FastLanguageModel
 
@@ -11,7 +9,7 @@ class QuantModelFactory:
     @staticmethod
     def load(
             model_path: str,
-            tokenizer_path: str = None,
+            use_unsloth: bool = False,
             quant_config: dict = None,
             **kwargs
     ) -> (transformers.PreTrainedModel, transformers.PreTrainedTokenizer):
@@ -21,9 +19,8 @@ class QuantModelFactory:
         ----------
         model_path: str
             String passed to the `from_pretrained` function. A path, either local or on the Huggingface hub.
-        tokenizer_path: str, optional
-             String passed to the `from_pretrained` function when loading a tokenizer. If left unspecified, will be the
-             same as `model_path`. (default = None)
+        use_unsloth: bool, optional
+             Whether to use unsloth model and tokenizer. (default = False)
         quant_config: dict, optional
             Dictionary of quantization configurations. By default, uses double 4-bit quantization with bfloat16 compute
             type. If left None, will use the default. (default = None)
@@ -33,36 +30,37 @@ class QuantModelFactory:
         model: transformers.PreTrainedModel
         tokenizer: transformers.PreTrainedTokenizer
         """
+        # Unsloth uses a different class to initialize models and tokens
+        if use_unsloth:
+            return FastLanguageModel.from_pretrained(
+                model_path,
+                load_in_4bit=True,
+                device_map='auto',
+                **kwargs
+            )
+
         # Override quant defaults if provided
         default_quant_config = dict(
             load_in_4bit=True,
-            #bnb_4bit_compute_dtype=torch.float16,  # bfloat16,  <- My GPU is Turing...
-            #bnb_4bit_use_double_quant=True,
-            device_map='auto'  # TODO: Check
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            device_map='auto'
         )
         quant_config = quant_config if quant_config is not None else default_quant_config
-        # quant_config = BitsAndBytesConfig(**quant_config)
+        quant_config = BitsAndBytesConfig(**quant_config)
 
         # Load model and tokenizer
-        # tokenizer = AutoTokenizer.from_pretrained(
-        #     model_path if tokenizer_path is None else tokenizer_path
-        # )
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+
         # Override default kwargs with passed kwargs
-        # arg_dict = dict(dict(quantization_config=quant_config, device_map='auto'), **kwargs)
-        arg_dict = dict(quant_config, **kwargs)
-        # model = AutoModelForCausalLM.from_pretrained(
-        #     model_path,
-        #     **arg_dict
-        # )
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_path,
-            **arg_dict
-        )
+        arg_dict = dict(dict(quantization_config=quant_config, device_map='auto'), **kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_path, **arg_dict)
 
         return model, tokenizer
 
     @staticmethod
     def mistral_7b(**kwargs):
+        """Constructs a Mistral object."""
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
             **kwargs
@@ -70,6 +68,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistral_7b_flash(**kwargs):
+        """Constructs a Mistral object with flash attention."""
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
             attn_implementation='flash_attention_2',
@@ -78,6 +77,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistrallite(**kwargs):
+        """Constructs a Mistrallite object."""
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
             **kwargs
@@ -85,6 +85,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistrallite_flash(**kwargs):
+        """Constructs a Mistrallite object with flash attention."""
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
             attn_implementation='flash_attention_2',
@@ -93,7 +94,9 @@ class QuantModelFactory:
 
     @staticmethod
     def mistral_7b_unsloth_4bit(**kwargs):
+        """Constructs a Mistral object using unsloth."""
         return QuantModelFactory.load(
             model_path='unsloth/mistral-7b-bnb-4bit',
+            use_unsloth=True,
             **kwargs
         )

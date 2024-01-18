@@ -1,0 +1,17 @@
+# Config file for training script
+
+lora_args:
+  r: 4
+  lora_alpha: 4
+  lora_dropout: 0.1
+train_args:
+  eval_steps: 16
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  logging_dir: "mistral_qlora_train"
+  logging_steps: 1
+  max_steps: 8192
+  output_dir: "unsloth_mistral_train"
+  save_steps: 32
+resume_from_checkpoint: "unsloth_mistral_train"
