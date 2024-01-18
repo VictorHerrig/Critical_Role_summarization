@@ -50,7 +50,6 @@ def main(args: dict):
         logging_steps=16,
         fp16=True,
         save_steps=128,
-        logging_dir=f'mistral_qlora_train_{datetime.today()}',
         logging_strategy='steps',
         eval_steps=64
     )

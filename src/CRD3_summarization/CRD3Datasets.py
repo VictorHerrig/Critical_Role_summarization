@@ -358,7 +358,7 @@ class CRD3Dataset(BaseSummarizationDataset, abc.ABC):
         super().__init__(cfg_file=cfg_file)
 
     def _load_dataset(self) -> HFDataset:
-        return load_dataset('crd3', split=self._cfg.get('split', 'train'))
+        return load_dataset('crd3', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['chunk']) > 1)
 
     def _iter_strings(self) -> Iterator[tuple[list[str], str]]:
         # Iterate through shuffles dataset
