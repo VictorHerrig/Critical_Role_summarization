@@ -1,21 +1,21 @@
-from CRD3_summarization.CRD3Datasets import MistralCRD3Dataset
+from argparse import ArgumentParser
+
+import yaml
 from datasets import Dataset
 from transformers import Trainer, TrainingArguments
 from unsloth import FastLanguageModel
 
+from CRD3_summarization.CRD3Datasets import MistralCRD3Dataset
 from CRD3_summarization.HuggingfaceModels import QuantModelFactory
 
-from datetime import datetime
-import yaml
-from argparse import ArgumentParser
 
-
-def main(args: dict):
+def main(passed_args: dict):
+    # Instantiate datasets
     train_dataset = MistralCRD3Dataset('conf/CRD3Dataset_train.yaml')
     val_dataset = MistralCRD3Dataset('conf/CRD3Dataset_val.yaml')
 
     def val_generator():
-        """Function that generates a random subset of cardinality 64"""
+        """Generator that yields a random subset of the val dataset with cardinality 64."""
         i = 0
         subset_card = 64
         for val in val_dataset:
@@ -28,11 +28,10 @@ def main(args: dict):
 
     # Load model and adapter
     model, tokenizer = QuantModelFactory.mistral_7b_unsloth_4bit()
-    # model, tokenizer = FastLanguageModel.from_pretrained('unsloth/mistral-7b-bnb-4bit', load_in_4bit=True, device_map='auto')
 
     # Update default LoRA args with values in the config file and load LoRA
     lora_args = dict(r=4, lora_alpha=4, bias='none')
-    lora_args = dict(lora_args, **args['lora_args'])
+    lora_args = dict(lora_args, **passed_args['lora_args'])
     model = FastLanguageModel.get_peft_model(model, **lora_args)
 
     # Update default train args with values in the config file
@@ -53,11 +52,17 @@ def main(args: dict):
         logging_strategy='steps',
         eval_steps=64
     )
-    train_args = dict(train_args, **args['train_args'])
+    train_args = dict(train_args, **passed_args['train_args'])
     train_args = TrainingArguments(**train_args)
 
     # Train
-    trainer = Trainer(model, args=train_args, train_dataset=train_dataset, eval_dataset=val_subset, tokenizer=tokenizer)
+    trainer = Trainer(
+        model,
+        args=train_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_subset,
+        tokenizer=tokenizer
+    )
     trainer.train()
 
 

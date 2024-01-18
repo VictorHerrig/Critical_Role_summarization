@@ -60,6 +60,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistral_7b(**kwargs):
+        """Constructs a Mistral object."""
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
             **kwargs
@@ -67,6 +68,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistral_7b_flash(**kwargs):
+        """Constructs a Mistral object with flash attention."""
         return QuantModelFactory.load(
             model_path='mistralai/Mistral-7B-v0.1',
             attn_implementation='flash_attention_2',
@@ -75,6 +77,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistrallite(**kwargs):
+        """Constructs a Mistrallite object."""
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
             **kwargs
@@ -82,6 +85,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistrallite_flash(**kwargs):
+        """Constructs a Mistrallite object with flash attention."""
         return QuantModelFactory.load(
             model_path='amazon/MistralLite',
             attn_implementation='flash_attention_2',
@@ -90,6 +94,7 @@ class QuantModelFactory:
 
     @staticmethod
     def mistral_7b_unsloth_4bit(**kwargs):
+        """Constructs a Mistral object using unsloth."""
         return QuantModelFactory.load(
             model_path='unsloth/mistral-7b-bnb-4bit',
             use_unsloth=True,
