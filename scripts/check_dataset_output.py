@@ -3,12 +3,15 @@
 
 from numpy.random import randint
 
-from CRD3_summarization.CRD3Datasets import EncoderDecoderCRD3Dataset, MistralCRD3Dataset
+from CRD3_summarization.SummarizationDatasets import EncoderDecoderCRD3Dataset, MistralCRD3Dataset,\
+    EncoderDecoderDialogsumDataset, MistralDialogsumDataset
 
 
 def main():
-    encoder_decoder_ds = EncoderDecoderCRD3Dataset('conf/CRD3Dataset_test.yaml')
-    mistral_ds = MistralCRD3Dataset('conf/CRD3Dataset_test.yaml')
+    # encoder_decoder_ds = EncoderDecoderCRD3Dataset('conf/dataset_test.yaml')
+    # mistral_ds = MistralCRD3Dataset('conf/dataset_test.yaml')
+    encoder_decoder_ds = EncoderDecoderDialogsumDataset('conf/dataset_val.yaml')
+    mistral_ds = MistralDialogsumDataset('conf/dataset_val.yaml')
 
     idx = randint(0, len(mistral_ds) - 1)
 
