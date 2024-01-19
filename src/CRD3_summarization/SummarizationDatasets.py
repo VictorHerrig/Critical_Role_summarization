@@ -31,7 +31,7 @@ class BaseSummarizationDataset(Dataset, abc.ABC):
         Parameters
         ----------
         cfg_file: str
-            Path to the configuration YAML file. See CRD3Dataset_train.yaml for configuration documentation.
+            Path to the configuration YAML file. See dataset_train.yaml for configuration documentation.
         """
         super().__init__()
         # Load config
@@ -312,13 +312,16 @@ class DecoderOnlyDataset(BaseSummarizationDataset, abc.ABC):
 
         # Build sequence tensor
         turn_ids = np.concatenate(turn_ids)
-        sequence = torch.concat((
+        generation_sequence = torch.concat((
             torch.tensor([self.bos_token_id]),
             torch.tensor(self.inst_open_ids),
             torch.tensor(self.prompt_prefix_ids),
             torch.tensor(turn_ids),
             torch.tensor(self.prompt_suffix_ids),
-            torch.tensor(self.inst_close_ids),
+            torch.tensor(self.inst_close_ids)
+        )).to(torch.int)
+        sequence = torch.concat((
+            generation_sequence,
             torch.tensor(summ_ids),
             torch.tensor([self.eos_token_id])
         )).to(torch.int)
@@ -338,6 +341,7 @@ class DecoderOnlyDataset(BaseSummarizationDataset, abc.ABC):
             prompt=prompt_string,
             summary=summary_string,
             input_ids=sequence,
+            generation_ids=generation_sequence,
             labels=labels,
         )
 
@@ -352,7 +356,7 @@ class CRD3Dataset(BaseSummarizationDataset, abc.ABC):
         Parameters
         ----------
         cfg_file: str
-            Path to the configuration YAML file. See CRD3Dataset_train.yaml for configuration documentation.
+            Path to the configuration YAML file. See dataset_train.yaml for configuration documentation.
         """
         super().__init__(cfg_file=cfg_file)
 
@@ -392,7 +396,7 @@ class DialogsumDataset(BaseSummarizationDataset, abc.ABC):
         super().__init__(cfg_file=cfg_file)
 
     def _load_dataset(self) -> HFDataset:
-        return load_dataset('knkarthick/dialogsum', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['chunk']) > 1)
+        return load_dataset('knkarthick/dialogsum', split=self._cfg.get('split', 'train')).filter(lambda x: len(x['summary']) > 1)
 
     def _parse_data(
             self,
@@ -402,14 +406,11 @@ class DialogsumDataset(BaseSummarizationDataset, abc.ABC):
         if len(summary_string) <= 0:
             raise ValueError('Empty summary string')
         dialogue: str = dataset_dict['dialogue']
+
+        # Parse dialogue into turns
         if len(dialogue) <= 0:
             raise ValueError('Empty dialogue string')
-        turns = re.split(r'\W*(#Person_\d+#)\W*:\W*', dialogue)[1:]
-
-        # Pass if there are empty strings or an odd number of turn string, else construct turn strings
-        if len(turns) % 2 != 0:
-            raise ValueError('Invalid number of turns')
-        turn_strings = [f'{turns[i]}: {turns[i + 1]}\n' for i in range(0, len(turns), 2)]
+        turn_strings = [f'{turn.strip()}\n' for turn in dialogue.split('\n')]
         if len(turn_strings) <= 0:
             raise ValueError('Empty turn string')
 
@@ -423,7 +424,7 @@ class MistralDataset(DecoderOnlyDataset, abc.ABC):
 
     @property
     def inst_close(self):
-        return '[/INST]'
+        return '[/INST]\n'
 
 
 class MistralliteDataset(DecoderOnlyDataset, abc.ABC):

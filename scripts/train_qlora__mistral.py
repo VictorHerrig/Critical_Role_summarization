@@ -6,13 +6,16 @@ from transformers import Trainer, TrainingArguments
 from unsloth import FastLanguageModel
 
 from CRD3_summarization.HuggingfaceModels import QuantModelFactory
-from CRD3_summarization.SummarizationDatasets import MistralCRD3Dataset
+from CRD3_summarization import SummarizationDatasets
 
 
 def main(passed_args: dict):
     # Instantiate datasets
-    train_dataset = MistralCRD3Dataset('conf/CRD3Dataset_train.yaml')
-    val_dataset = MistralCRD3Dataset('conf/CRD3Dataset_val.yaml')
+    dataset_type = args['dataset_type']
+    train_dataset = getattr(SummarizationDatasets, dataset_type)('conf/dataset_train.yaml')
+    val_dataset = getattr(SummarizationDatasets, dataset_type)('conf/dataset_val.yaml')
+    # train_dataset = MistralCRD3Dataset('conf/dataset_train.yaml')
+    # val_dataset = MistralCRD3Dataset('conf/dataset_val.yaml')
 
     def val_generator():
         """Generator that yields a random subset of the val dataset with cardinality 64."""
@@ -36,7 +39,7 @@ def main(passed_args: dict):
 
     # Update default train args with values in the config file
     train_args = dict(
-        output_dir='unsloth_mistral_train',
+        output_dir='crd3_unsloth_mistral_lora',
         do_train=True,
         do_eval=True,
         max_steps=8192,
@@ -63,7 +66,7 @@ def main(passed_args: dict):
         eval_dataset=val_subset,
         tokenizer=tokenizer
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=passed_args.get('resume_from_checkpoint', None))
 
 
 if __name__ == '__main__':
