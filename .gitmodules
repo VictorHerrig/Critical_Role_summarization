@@ -1,0 +1,3 @@
+[submodule "VCtube"]
+	path = VCtube
+	url = git@github.com:VictorHerrig/VCtube.git
