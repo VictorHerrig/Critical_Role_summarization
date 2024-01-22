@@ -2,6 +2,8 @@ import json
 import re
 
 from argparse import ArgumentParser
+
+import numpy as np
 import pandas as pd
 
 
@@ -24,7 +26,7 @@ def main(
     with open(alignment_json, 'r') as f:
         alignment_dict = json.load(f)
 
-    current_speaker = ''
+    current_speaker = 'UNKNOWN'
     speaker_annotations = list()
 
     # Iterate over text and extract the relevant speaker annotations
@@ -36,28 +38,34 @@ def main(
         speaker_substring = re.search(r'([A-Z]+):', text)
         unknown_speaker = speaker_substring is not None and speaker_substring[1] not in SPEAKER_NAMES
 
-        # Catch cases like '(all laugh)', '[dramatic music]' without forgetting the current speaker
-        if in_parentheses or in_brackets:
-            continue
-        # Catch untracked speakers (guests, etc.) and reset the current speaker
-        if unknown_speaker:
-            current_speaker = ''
+        # Catch cases like '(all laugh)', '[dramatic music]' or unknown speakers (guests, etc.)
+        if in_parentheses or in_brackets or unknown_speaker:
+            current_speaker = 'UNKNOWN'
+            speaker_annotations.append([filename, 'UNKNOWN'])
             continue
 
         # Find the speakers present in the caption
         present_speakers = [name in text for name in SPEAKER_NAMES]
 
         # Continue the current speaker if there is none present
-        if not any(present_speakers) and current_speaker in SPEAKER_NAMES:
+        if not any(present_speakers):
             speaker_annotations.append([filename, current_speaker])
         # Switch speakers if there is a change at the beginning, else change the current speaker without annotating
-        if sum(present_speakers) == 1:
+        elif sum(present_speakers) == 1:
             speaker = SPEAKER_NAMES[present_speakers.index(True)]
             if text.index(speaker) <= 2:
                 speaker_annotations.append([filename, speaker])
+            # If it changed later on, label this as multiple and change the current speaker
+            else:
+                speaker_annotations.append([filename, 'MULTIPLE'])
             current_speaker = speaker
-
-        # Continue if there are multiple speakers or if there are no speakers and also no current speaker
+        # If there are multiple known speaker labels, label as multiple
+        else:
+            speaker_idxs = [-1 if not present else text.index(SPEAKER_NAMES[i])
+                            for i, present in enumerate(present_speakers)]
+            last_speaker = SPEAKER_NAMES[np.argmax(speaker_idxs)]
+            current_speaker = last_speaker
+            speaker_annotations.append([filename, 'MULTIPLE'])
 
     output_df = pd.DataFrame(data=speaker_annotations, columns=['filename', 'speaker'])
     output_df.to_csv(output_path, index=False, header=False)
