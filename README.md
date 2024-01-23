@@ -16,6 +16,15 @@ Dungeons&Dragons games. It has become very popular (boasting the highest
 revenue of all Twitch streams) and the fan base has made available
 transcripts and summaries of episodes.
 
+## The General Idea
+This project has grown in my mind from being a playground for summarization to perhaps a truly useful application. The idea is this:
+ - Listen to an incoming twitch stream using rtmpdump or similar, getting only the audio (although video may theoretically provide further accuracy, I suspect there will be serious diminishing returns)
+ - Have a constantly running speaker-attributed automatic speech recognition (SA-ASR) system running that produces a 'script' of sorts; this may be feasible on CPU, but we'll have to see
+ - At fixed intervals (say, 1 or 5 minutes) run a series of summarization inference tasks on GPU to produce summaries for a set of durations (e.g. the last 1 minute, 5 mintues, 15 mintues, 1 hour...)
+ - These different time periods could, naively, be simply pasted together from finer-grained summaries, though a better approach would likely be to do some prompt engineering using previous output summaries
+So, this will provide listeners the ability to step away to do whatever they need without fear of missing out of story details. Twitch chat is notoriously unhelpful when queried, so this may serve as a sort of ad-hoc replacement to human summarization.
+Naturally, if this were to be made into an actual running service, there would be plenty of ops questions to sort out, but for the time being I am focusing on development of a baseline system.
+
 ## Requirements
 Aside from those packages listed in setup.py, you will need to additionally install:
 - cuda-toolkit (this can be done system-wide or with conda using the nvidia channel)
