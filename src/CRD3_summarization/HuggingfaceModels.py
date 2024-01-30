@@ -58,44 +58,44 @@ class QuantModelFactory:
 
         return model, tokenizer
 
-    @staticmethod
-    def mistral_7b(**kwargs):
+    @classmethod
+    def mistral_7b(cls, **kwargs):
         """Constructs a Mistral object."""
-        return QuantModelFactory.load(
+        return cls.load(
             model_path='mistralai/Mistral-7B-v0.1',
             **kwargs
         )
 
-    @staticmethod
-    def mistral_7b_flash(**kwargs):
+    @classmethod
+    def mistral_7b_flash(cls, **kwargs):
         """Constructs a Mistral object with flash attention."""
-        return QuantModelFactory.load(
+        return cls.load(
             model_path='mistralai/Mistral-7B-v0.1',
             attn_implementation='flash_attention_2',
             **kwargs
         )
 
-    @staticmethod
-    def mistrallite(**kwargs):
+    @classmethod
+    def mistrallite(cls, **kwargs):
         """Constructs a Mistrallite object."""
-        return QuantModelFactory.load(
+        return cls.load(
             model_path='amazon/MistralLite',
             **kwargs
         )
 
-    @staticmethod
-    def mistrallite_flash(**kwargs):
+    @classmethod
+    def mistrallite_flash(cls, **kwargs):
         """Constructs a Mistrallite object with flash attention."""
-        return QuantModelFactory.load(
+        return cls.load(
             model_path='amazon/MistralLite',
             attn_implementation='flash_attention_2',
             **kwargs
         )
 
-    @staticmethod
-    def mistral_7b_unsloth_4bit(**kwargs):
+    @classmethod
+    def mistral_7b_unsloth_4bit(cls, **kwargs):
         """Constructs a Mistral object using unsloth."""
-        return QuantModelFactory.load(
+        return cls.load(
             model_path='unsloth/mistral-7b-bnb-4bit',
             use_unsloth=True,
             **kwargs
