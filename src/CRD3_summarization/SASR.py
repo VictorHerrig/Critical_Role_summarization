@@ -14,6 +14,22 @@ MODEL_SIZE_ENCODE_DIMS = {
 }
 
 
+class Speaker(NamedTuple):
+    start: float
+    end: float
+    speaker: str
+    probability: float
+
+
+class SAWord(NamedTuple):
+    start: float
+    end: float
+    word: str
+    probability: float
+    speaker: str
+    speaker_probability: float
+
+
 # Pretty big bummer we can't subclass NamedTuple types
 class SASegment(NamedTuple):
     id: int
@@ -26,8 +42,8 @@ class SASegment(NamedTuple):
     avg_logprob: float
     compression_ratio: float
     no_speech_prob: float
-    words: Optional[List[Word]]
-    speaker: str
+    words: List[SAWord]
+    speakers: List[Speaker]
 
 
 class SequencePool(torch.nn.Module):
@@ -284,14 +300,33 @@ class SAASRModel(WhisperModel, torch.nn.Module):
             # Run speaker attribution for this segment
             # Segments are quite short
             # TODO: This is not very elegant
+            #  Also check batch dimension (should match batch_first in SA model)
+            n_segment_frames = encoder_output.shape[0]
+            segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
             if self._speaker_recognition_model.architecture_type in ['mlp']:
-                segment_speaker_logits = self._speaker_recognition_model(encoder_output)
+                segment_speaker_logits = self._speaker_recognition_model(encoder_output)  # [n_speaker]
+                segment_speaker_id = segment_speaker_logits.argmax(-1)  # scalar
+                speakers = [
+                    Speaker(
+                        start=time_offset,
+                        end=time_offset + segment_duration,
+                        speaker=segment_speaker_id,
+                        probability=segment_speaker_logits[segment_speaker_id]
+                    ),
+                ]
             else:
-                # TODO: Find sequence dim empirically
-                sequence_dim = 2
-                segment_speaker_logits = self._speaker_recognition_model(encoder_output).mean(sequence_dim)
-            segment_speaker_id = segment_speaker_logits.argmax(-1)
-            segment_speaker = self._speaker_recognition_model.speaker_names[segment_speaker_id]
+                speaker_logits = self._speaker_recognition_model(encoder_output)  # [seq_len, n_speaker]
+                speaker_ids = speaker_logits.argmax(-1)  # [seq_len, n_speaker]
+                speaker_changes = torch.nonzero(speaker_ids[1:] - speaker_ids[:-1])
+                speakers = [
+                    Speaker(
+                        start=time_offset + start_idx * self.feature_extractor.time_per_frame,
+                        end=time_offset + stop_idx * self.feature_extractor.time_per_frame,
+                        speaker=speaker_ids[start_idx],
+                        probability=speaker_logits[start_idx: stop_idx].mean()  # TODO: Kinda hacky, could be on word level
+                    )
+                    for start_idx, stop_idx in zip(speaker_changes[:-1], speaker_changes[1:])
+                ]
 
             (
                 result,
@@ -381,29 +416,68 @@ class SAASRModel(WhisperModel, torch.nn.Module):
 
                 seek += segment_size
 
-            if options.word_timestamps:
-                self.add_word_timestamps(
-                    current_segments,
-                    tokenizer,
-                    encoder_output,
-                    segment_size,
-                    options.prepend_punctuations,
-                    options.append_punctuations,
-                    last_speech_timestamp=last_speech_timestamp,
-                )
+            # Timestamps are necessary to align speaker labels
+            self.add_word_timestamps(
+                current_segments,
+                tokenizer,
+                encoder_output,
+                segment_size,
+                options.prepend_punctuations,
+                options.append_punctuations,
+                last_speech_timestamp=last_speech_timestamp,
+            )
 
-                word_end_timestamps = [w["end"] for s in current_segments for w in s["words"]]
-                if len(word_end_timestamps) > 0:
-                    last_speech_timestamp = word_end_timestamps[-1]
-                if not single_timestamp_ending and len(word_end_timestamps) > 0:
-                    seek_shift = round((word_end_timestamps[-1] - time_offset) * self.frames_per_second)
+            word_end_timestamps = [w["end"] for s in current_segments for w in s["words"]]
+            if len(word_end_timestamps) > 0:
+                last_speech_timestamp = word_end_timestamps[-1]
+            if not single_timestamp_ending and len(word_end_timestamps) > 0:
+                seek_shift = round((word_end_timestamps[-1] - time_offset) * self.frames_per_second)
 
-                    if seek_shift > 0:
-                        seek = previous_seek + seek_shift
+                if seek_shift > 0:
+                    seek = previous_seek + seek_shift
 
             for segment in current_segments:
                 tokens = segment["tokens"]
                 text = tokenizer.decode(tokens)
+
+                # Find corresponding speaker for each word
+                word_idx = 0
+                holdover_word = False
+                for spkr in speakers:
+                    # In the case the previous speaker changed without covering 50% of the word duration
+                    if holdover_word:
+                        segment['words'][word_idx]['speaker'] = spkr.speaker
+                        segment['words'][word_idx]['speaker_probability'] = spkr.probability
+                        word_idx += 1
+
+                    # Break condition
+                    if word_idx >= len(segment['words']):
+                        break
+
+                    # Initial calculation
+                    current_word = segment['words'][word_idx]
+                    word_duration = current_word['end'] - current_word['start']
+                    intersect_duration = min(current_word['end'], spkr.end) - max(current_word['start'], spkr.start)
+                    timestamp_overlap = intersect_duration / word_duration
+
+                    # If the speaker timestamps overlap at least 50% of the word timestamp
+                    while timestamp_overlap >= 0.5:
+                        segment['words'][word_idx]['speaker'] = spkr.speaker
+                        segment['words'][word_idx]['speaker_probability'] = spkr.probability
+
+                        word_idx += 1
+                        if word_idx >= len(segment['words']) - 1:
+                            break
+                        current_word = segment['words'][word_idx]
+                        word_duration = current_word['end'] - current_word['start']
+                        intersect_duration = min(current_word['end'], spkr.end) - max(current_word['start'], spkr.start)
+                        timestamp_overlap = intersect_duration / word_duration
+                    else:
+                        holdover_word = True
+                # If there are somehow words after the speaker labels, label them as 'UNKNOWN'
+                if word_idx < len(segment['words']):
+                    segment['words'][word_idx]['speaker'] = 'UNKNOWN'
+                    segment['words'][word_idx]['speaker_probability'] = 0.5
 
                 if segment["start"] == segment["end"] or not text.strip():
                     continue
@@ -423,11 +497,11 @@ class SAASRModel(WhisperModel, torch.nn.Module):
                     compression_ratio=compression_ratio,
                     no_speech_prob=result.no_speech_prob,
                     words=(
-                        [Word(**word) for word in segment["words"]]
+                        [SAWord(**word) for word in segment["words"]]
                         if options.word_timestamps
                         else None
                     ),
-                    speaker=segment_speaker
+                    speakers=speakers
                 )
 
             if (
