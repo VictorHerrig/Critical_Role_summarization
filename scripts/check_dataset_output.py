@@ -3,7 +3,7 @@
 
 from numpy.random import randint
 
-from CRD3_summarization.SummarizationDatasets import EncoderDecoderCRD3Dataset, MistralCRD3Dataset,\
+from cr_summ.SummarizationDatasets import EncoderDecoderCRD3Dataset, MistralCRD3Dataset,\
     EncoderDecoderDialogsumDataset, MistralDialogsumDataset
 
 

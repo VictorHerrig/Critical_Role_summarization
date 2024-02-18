@@ -77,9 +77,9 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             device: str = None,
             num_layers: int = 2
     ):
-        super().__init__()
         assert architecture_type in ['decoder', 'encoder', 'mlp'],\
             ValueError('Expected architecture_type to be either "decoder" or "encoder"')
+        super().__init__()
 
         # No one should be able to change this - make it private
         # Yes I know python people hate this, but it's justified in this instance, I would say
@@ -155,9 +155,13 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
     def forward(
             self,
             tgt: torch.Tensor,
-            memory: torch.Tensor,
+            memory: torch.Tensor = None,
             **kwargs
     ) -> torch.Tensor:
+        if memory is None:
+            if self.architecture_type in ['encoder']:
+                raise ValueError('memory argument required for encoder -decoder architectures')
+            memory = torch.clone(tgt)
         decoder_out = self._decoder(tgt, memory, tgt_is_causal=False, memory_is_causal=False)
         logits = self._linear(decoder_out)
         return self._smax(logits)
@@ -191,7 +195,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         )
 
 
-class SAASRModel(WhisperModel, torch.nn.Module):
+class SAASRModel(WhisperModel):
     def __init__(
             self,
             whisper_model_size_or_path: str,
