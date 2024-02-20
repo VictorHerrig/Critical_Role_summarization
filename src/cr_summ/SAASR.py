@@ -49,7 +49,7 @@ class SASegment(NamedTuple):
 class SequencePool(torch.nn.Module):
     def __init__(
             self,
-            batch_first: bool = False  # TODO: Check the default on the pretrained models and adjust accordingly
+            batch_first: bool = False
     ):
         super().__init__()
         self.batch_first = batch_first
@@ -75,7 +75,8 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             dim_feedforward: int = 512,
             dropout: float = 0.1,
             device: str = None,
-            num_layers: int = 2
+            num_layers: int = 2,
+            dtype: torch.dtype = torch.float32
     ):
         assert architecture_type in ['decoder', 'encoder', 'mlp'],\
             ValueError('Expected architecture_type to be either "decoder" or "encoder"')
@@ -86,6 +87,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         self.__architecture_type = architecture_type
 
         self.speaker_names = speaker_names
+        self.device = device
 
         if architecture_type == 'decoder':
             # Unidirectional transformer block
@@ -94,12 +96,18 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
-                device=device
+                device=device,
+                dtype=dtype
             )
-            self._decoder = torch.nn.TransformerDecoder(
+            decoder_fn = torch.nn.TransformerDecoder(
                 decoder_layer=decoder_layer,
                 num_layers=num_layers
             )
+
+            def decoder_only_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt, torch.clone(tgt), **kwargs)
+
+            self._decoder = decoder_only_decoder_fn
         elif architecture_type == 'encoder':
             # Bidirectional transformer block
             encoder_layer = torch.nn.TransformerEncoderLayer(
@@ -107,46 +115,63 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
-                device=device
+                device=device,
+                dtype=dtype
             )
-            self._decoder = torch.nn.TransformerEncoder(
+            decoder_fn = torch.nn.TransformerEncoder(
                 encoder_layer=encoder_layer,
                 num_layers=num_layers
             )
+
+            def encoder_only_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt, torch.clone(tgt), **kwargs)
+
+            self._decoder = encoder_only_decoder_fn
         elif architecture_type == 'mlp':
             # A very lightweight MLP to return simply one speaker prediction per sequence
             # Start with global pooling over sequence length
             pool_layer = SequencePool()
             first_layer = torch.nn.Linear(
                 in_features=input_size,
-                out_features=dim_feedforward
+                out_features=dim_feedforward,
+                device=device,
+                dtype=dtype
             )
             in_between_layers = [
                 torch.nn.Linear(
                     in_features=dim_feedforward,
-                    out_features=dim_feedforward
+                    out_features=dim_feedforward,
+                    device=device,
+                    dtype=dtype
                 )
                 for _ in range(num_layers - 2)
             ]
             last_layer = torch.nn.Linear(
                 in_features=dim_feedforward,
-                out_features=input_size
+                out_features=input_size,
+                device=device,
+                dtype=dtype
             )
-            self._decoder = torch.nn.Sequential(
+            decoder_fn = torch.nn.Sequential(
                 pool_layer,
                 first_layer,
                 *in_between_layers,
                 last_layer
             )
 
+            def mlp_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt)
+
+            self._decoder = mlp_decoder_fn
+
         # Linear + smax for classification
         self._linear = torch.nn.Linear(
             in_features=input_size,
-            out_features=num_speakers
+            out_features=num_speakers,
+            device=device,
+            dtype=dtype
         )
-        self._smax = torch.nn.Softmax(
-            dim=num_speakers
-        )
+        self._smax = torch.nn.Softmax(dim=1)
 
     @property
     def architecture_type(self):
@@ -155,15 +180,13 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
     def forward(
             self,
             tgt: torch.Tensor,
-            memory: torch.Tensor = None,
             **kwargs
     ) -> torch.Tensor:
-        if memory is None:
-            if self.architecture_type in ['encoder']:
-                raise ValueError('memory argument required for encoder -decoder architectures')
-            memory = torch.clone(tgt)
-        decoder_out = self._decoder(tgt, memory, tgt_is_causal=False, memory_is_causal=False)
+        print(tgt.shape)
+        decoder_out = self._decoder(tgt, tgt_is_causal=False, memory_is_causal=False, **kwargs)
+        print(decoder_out.shape)
         logits = self._linear(decoder_out)
+        print(logits.shape)
         return self._smax(logits)
 
     @classmethod
@@ -301,14 +324,22 @@ class SAASRModel(WhisperModel):
             if seek > 0 or encoder_output is None:
                 encoder_output = self.encode(segment)
 
+            # TODO: This is not very elegant
+            # Extract the CTranslate2 StorageView into a Tensor
+            n_segment_frames = encoder_output.shape[1]
+            segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
+            print(encoder_output.shape, n_segment_frames, self.feature_extractor.time_per_frame, segment_duration)
+            speaker_recog_input = torch.clone(torch.tensor(encoder_output))\
+                .to(torch.float32)\
+                .to(self._speaker_recognition_model.device)
+            print(speaker_recog_input.shape, speaker_recog_input.dtype)
+
             # Run speaker attribution for this segment
             # Segments are quite short
-            # TODO: This is not very elegant
-            #  Also check batch dimension (should match batch_first in SA model)
-            n_segment_frames = encoder_output.shape[0]
-            segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
+            # TODO: Check iteration over batch sizes
             if self._speaker_recognition_model.architecture_type in ['mlp']:
-                segment_speaker_logits = self._speaker_recognition_model(encoder_output)  # [n_speaker]
+                # TODO: check nans
+                segment_speaker_logits = self._speaker_recognition_model(speaker_recog_input)  # [n_speaker]
                 segment_speaker_id = segment_speaker_logits.argmax(-1)  # scalar
                 speakers = [
                     Speaker(
@@ -319,18 +350,29 @@ class SAASRModel(WhisperModel):
                     ),
                 ]
             else:
-                speaker_logits = self._speaker_recognition_model(encoder_output)  # [seq_len, n_speaker]
-                speaker_ids = speaker_logits.argmax(-1)  # [seq_len, n_speaker]
+                speaker_logits = self._speaker_recognition_model(speaker_recog_input)  # [seq_len, n_speaker]
+                speaker_ids = speaker_logits.squeeze().argmax(-1)  # [seq_len, n_speaker]  TODO: batch size?
                 speaker_changes = torch.nonzero(speaker_ids[1:] - speaker_ids[:-1])
-                speakers = [
-                    Speaker(
-                        start=time_offset + start_idx * self.feature_extractor.time_per_frame,
-                        end=time_offset + stop_idx * self.feature_extractor.time_per_frame,
-                        speaker=speaker_ids[start_idx],
-                        probability=speaker_logits[start_idx: stop_idx].mean()  # TODO: Kinda hacky, could be on word level
-                    )
-                    for start_idx, stop_idx in zip(speaker_changes[:-1], speaker_changes[1:])
-                ]
+                if len(speaker_changes) == 0:
+                    # No speaker changes, use mean prob of only speaker
+                    speakers = [
+                        Speaker(
+                            start=time_offset,
+                            end=time_offset + segment_duration,
+                            speaker=speaker_ids[0],
+                            probability=speaker_logits.mean()
+                        ),
+                    ]
+                else:
+                    speakers = [
+                        Speaker(
+                            start=time_offset + start_idx * self.feature_extractor.time_per_frame,
+                            end=time_offset + stop_idx * self.feature_extractor.time_per_frame,
+                            speaker=speaker_ids[start_idx],
+                            probability=speaker_logits[start_idx: stop_idx].mean()  # TODO: Kinda hacky, could be on word level
+                        )
+                        for start_idx, stop_idx in zip(speaker_changes[:-1], speaker_changes[1:])
+                    ]
 
             (
                 result,
