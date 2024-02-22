@@ -90,14 +90,15 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         self.device = device
 
         if architecture_type == 'decoder':
-            # Unidirectional transformer block
+            # Decoder transformer block
             decoder_layer = torch.nn.TransformerDecoderLayer(
                 d_model=input_size,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
                 device=device,
-                dtype=dtype
+                dtype=dtype,
+                batch_first=True
             )
             decoder_fn = torch.nn.TransformerDecoder(
                 decoder_layer=decoder_layer,
@@ -109,14 +110,16 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
 
             self._decoder = decoder_only_decoder_fn
         elif architecture_type == 'encoder':
-            # Bidirectional transformer block
+            # TODO: Fix
+            # Encoder transformer block
             encoder_layer = torch.nn.TransformerEncoderLayer(
                 d_model=input_size,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
                 device=device,
-                dtype=dtype
+                dtype=dtype,
+                batch_first=True
             )
             decoder_fn = torch.nn.TransformerEncoder(
                 encoder_layer=encoder_layer,
@@ -171,7 +174,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             device=device,
             dtype=dtype
         )
-        self._smax = torch.nn.Softmax(dim=1)
+        self._smax = torch.nn.Softmax(dim=-1)
 
     @property
     def architecture_type(self):
@@ -183,7 +186,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             **kwargs
     ) -> torch.Tensor:
         print(tgt.shape)
-        decoder_out = self._decoder(tgt, tgt_is_causal=False, memory_is_causal=False, **kwargs)
+        decoder_out = self._decoder(tgt, **kwargs)
         print(decoder_out.shape)
         logits = self._linear(decoder_out)
         print(logits.shape)
@@ -327,7 +330,10 @@ class SAASRModel(WhisperModel):
             # TODO: This is not very elegant
             # Extract the CTranslate2 StorageView into a Tensor
             n_segment_frames = encoder_output.shape[1]
+            print(f'time_offset: {type(time_offset)}')
+            print(f'n_segment_frames: {type(n_segment_frames)}')
             segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
+            print(f'segment_duration: {type(segment_duration)}')
             print(encoder_output.shape, n_segment_frames, self.feature_extractor.time_per_frame, segment_duration)
             speaker_recog_input = torch.clone(torch.tensor(encoder_output))\
                 .to(torch.float32)\
@@ -338,7 +344,6 @@ class SAASRModel(WhisperModel):
             # Segments are quite short
             # TODO: Check iteration over batch sizes
             if self._speaker_recognition_model.architecture_type in ['mlp']:
-                # TODO: check nans
                 segment_speaker_logits = self._speaker_recognition_model(speaker_recog_input)  # [n_speaker]
                 segment_speaker_id = segment_speaker_logits.argmax(-1)  # scalar
                 speakers = [
@@ -350,29 +355,32 @@ class SAASRModel(WhisperModel):
                     ),
                 ]
             else:
-                speaker_logits = self._speaker_recognition_model(speaker_recog_input)  # [seq_len, n_speaker]
-                speaker_ids = speaker_logits.squeeze().argmax(-1)  # [seq_len, n_speaker]  TODO: batch size?
-                speaker_changes = torch.nonzero(speaker_ids[1:] - speaker_ids[:-1])
+                speaker_probs = self._speaker_recognition_model(speaker_recog_input)  # [batch, seq_len, n_speaker]
+                speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]  TODO: batch size?
+                speaker_changes = torch.nonzero(speaker_ids[1:] - speaker_ids[:-1])  # [seq_len]
                 if len(speaker_changes) == 0:
                     # No speaker changes, use mean prob of only speaker
+                    speaker_id = speaker_ids[0]
+                    speaker_name = self._speaker_recognition_model.speaker_names[speaker_id]
                     speakers = [
                         Speaker(
                             start=time_offset,
                             end=time_offset + segment_duration,
-                            speaker=speaker_ids[0],
-                            probability=speaker_logits.mean()
+                            speaker=speaker_name,
+                            probability=speaker_probs[..., speaker_id].mean()
                         ),
                     ]
                 else:
                     speakers = [
                         Speaker(
-                            start=time_offset + start_idx * self.feature_extractor.time_per_frame,
-                            end=time_offset + stop_idx * self.feature_extractor.time_per_frame,
-                            speaker=speaker_ids[start_idx],
-                            probability=speaker_logits[start_idx: stop_idx].mean()  # TODO: Kinda hacky, could be on word level
+                            start=time_offset + start_idx.item() * self.feature_extractor.time_per_frame,
+                            end=time_offset + stop_idx.item() * self.feature_extractor.time_per_frame,
+                            speaker=self._speaker_recognition_model.speaker_names[speaker_ids[start_idx]],
+                            probability=speaker_probs[0, start_idx: stop_idx, speaker_ids[start_idx]].mean().item()  # TODO: Kinda hacky, could be on word level
                         )
                         for start_idx, stop_idx in zip(speaker_changes[:-1], speaker_changes[1:])
                     ]
+            # TODO: Consider encoder-decoder with whisper encoding and generated tokens
 
             (
                 result,
@@ -400,6 +408,7 @@ class SAASRModel(WhisperModel):
                     seek += segment_size
                     continue
 
+            # TODO: Speaker recognition that also takes in generation logits/sequences
             tokens = result.sequences_ids[0]
 
             previous_seek = seek
@@ -544,8 +553,8 @@ class SAASRModel(WhisperModel):
                     no_speech_prob=result.no_speech_prob,
                     words=(
                         [SAWord(**word) for word in segment["words"]]
-                        if options.word_timestamps
-                        else None
+                        #if options.word_timestamps
+                        #else None
                     ),
                     speakers=speakers
                 )
