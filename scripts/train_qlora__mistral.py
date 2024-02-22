@@ -5,8 +5,8 @@ from datasets import Dataset
 from transformers import Trainer, TrainingArguments
 from unsloth import FastLanguageModel
 
-from CRD3_summarization.HuggingfaceModels import QuantModelFactory
-from CRD3_summarization import SummarizationDatasets
+from cr_summ.HuggingfaceModels import QuantModelFactory
+from cr_summ import SummarizationDatasets
 
 
 def main(passed_args: dict):

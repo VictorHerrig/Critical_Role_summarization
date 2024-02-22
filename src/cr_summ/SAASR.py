@@ -14,6 +14,22 @@ MODEL_SIZE_ENCODE_DIMS = {
 }
 
 
+class Speaker(NamedTuple):
+    start: float
+    end: float
+    speaker: str
+    probability: float
+
+
+class SAWord(NamedTuple):
+    start: float
+    end: float
+    word: str
+    probability: float
+    speaker: str
+    speaker_probability: float
+
+
 # Pretty big bummer we can't subclass NamedTuple types
 class SASegment(NamedTuple):
     id: int
@@ -26,14 +42,14 @@ class SASegment(NamedTuple):
     avg_logprob: float
     compression_ratio: float
     no_speech_prob: float
-    words: Optional[List[Word]]
-    speaker: str
+    words: List[SAWord]
+    speakers: List[Speaker]
 
 
 class SequencePool(torch.nn.Module):
     def __init__(
             self,
-            batch_first: bool = False  # TODO: Check the default on the pretrained models and adjust accordingly
+            batch_first: bool = False
     ):
         super().__init__()
         self.batch_first = batch_first
@@ -59,78 +75,106 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             dim_feedforward: int = 512,
             dropout: float = 0.1,
             device: str = None,
-            num_layers: int = 2
+            num_layers: int = 2,
+            dtype: torch.dtype = torch.float32
     ):
-        super().__init__()
         assert architecture_type in ['decoder', 'encoder', 'mlp'],\
             ValueError('Expected architecture_type to be either "decoder" or "encoder"')
+        super().__init__()
 
         # No one should be able to change this - make it private
         # Yes I know python people hate this, but it's justified in this instance, I would say
         self.__architecture_type = architecture_type
 
         self.speaker_names = speaker_names
+        self.device = device
 
         if architecture_type == 'decoder':
-            # Unidirectional transformer block
+            # Decoder transformer block
             decoder_layer = torch.nn.TransformerDecoderLayer(
                 d_model=input_size,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
-                device=device
+                device=device,
+                dtype=dtype,
+                batch_first=True
             )
-            self._decoder = torch.nn.TransformerDecoder(
+            decoder_fn = torch.nn.TransformerDecoder(
                 decoder_layer=decoder_layer,
                 num_layers=num_layers
             )
+
+            def decoder_only_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt, torch.clone(tgt), **kwargs)
+
+            self._decoder = decoder_only_decoder_fn
         elif architecture_type == 'encoder':
-            # Bidirectional transformer block
+            # TODO: Fix
+            # Encoder transformer block
             encoder_layer = torch.nn.TransformerEncoderLayer(
                 d_model=input_size,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
-                device=device
+                device=device,
+                dtype=dtype,
+                batch_first=True
             )
-            self._decoder = torch.nn.TransformerEncoder(
+            decoder_fn = torch.nn.TransformerEncoder(
                 encoder_layer=encoder_layer,
                 num_layers=num_layers
             )
+
+            def encoder_only_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt, torch.clone(tgt), **kwargs)
+
+            self._decoder = encoder_only_decoder_fn
         elif architecture_type == 'mlp':
             # A very lightweight MLP to return simply one speaker prediction per sequence
             # Start with global pooling over sequence length
             pool_layer = SequencePool()
             first_layer = torch.nn.Linear(
                 in_features=input_size,
-                out_features=dim_feedforward
+                out_features=dim_feedforward,
+                device=device,
+                dtype=dtype
             )
             in_between_layers = [
                 torch.nn.Linear(
                     in_features=dim_feedforward,
-                    out_features=dim_feedforward
+                    out_features=dim_feedforward,
+                    device=device,
+                    dtype=dtype
                 )
                 for _ in range(num_layers - 2)
             ]
             last_layer = torch.nn.Linear(
                 in_features=dim_feedforward,
-                out_features=input_size
+                out_features=input_size,
+                device=device,
+                dtype=dtype
             )
-            self._decoder = torch.nn.Sequential(
+            decoder_fn = torch.nn.Sequential(
                 pool_layer,
                 first_layer,
                 *in_between_layers,
                 last_layer
             )
 
+            def mlp_decoder_fn(tgt: torch.Tensor, **kwargs):
+                return decoder_fn(tgt)
+
+            self._decoder = mlp_decoder_fn
+
         # Linear + smax for classification
         self._linear = torch.nn.Linear(
             in_features=input_size,
-            out_features=num_speakers
+            out_features=num_speakers,
+            device=device,
+            dtype=dtype
         )
-        self._smax = torch.nn.Softmax(
-            dim=num_speakers
-        )
+        self._smax = torch.nn.Softmax(dim=-1)
 
     @property
     def architecture_type(self):
@@ -139,10 +183,9 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
     def forward(
             self,
             tgt: torch.Tensor,
-            memory: torch.Tensor,
             **kwargs
     ) -> torch.Tensor:
-        decoder_out = self._decoder(tgt, memory, tgt_is_causal=False, memory_is_causal=False)
+        decoder_out = self._decoder(tgt, **kwargs)
         logits = self._linear(decoder_out)
         return self._smax(logits)
 
@@ -175,7 +218,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         )
 
 
-class SAASRModel(WhisperModel, torch.nn.Module):
+class SAASRModel(WhisperModel):
     def __init__(
             self,
             whisper_model_size_or_path: str,
@@ -281,17 +324,55 @@ class SAASRModel(WhisperModel, torch.nn.Module):
             if seek > 0 or encoder_output is None:
                 encoder_output = self.encode(segment)
 
+            # TODO: This is not very elegant
+            # Extract the CTranslate2 StorageView into a Tensor
+            n_segment_frames = encoder_output.shape[1]
+            segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
+            speaker_recog_input = torch.clone(torch.tensor(encoder_output))\
+                .to(torch.float32)\
+                .to(self._speaker_recognition_model.device)
+
             # Run speaker attribution for this segment
             # Segments are quite short
-            # TODO: This is not very elegant
+            # TODO: Check iteration over batch sizes
             if self._speaker_recognition_model.architecture_type in ['mlp']:
-                segment_speaker_logits = self._speaker_recognition_model(encoder_output)
+                segment_speaker_logits = self._speaker_recognition_model(speaker_recog_input)  # [n_speaker]
+                segment_speaker_id = segment_speaker_logits.argmax(-1)  # scalar
+                speakers = [
+                    Speaker(
+                        start=time_offset,
+                        end=time_offset + segment_duration,
+                        speaker=segment_speaker_id,
+                        probability=segment_speaker_logits[segment_speaker_id]
+                    ),
+                ]
             else:
-                # TODO: Find sequence dim empirically
-                sequence_dim = 2
-                segment_speaker_logits = self._speaker_recognition_model(encoder_output).mean(sequence_dim)
-            segment_speaker_id = segment_speaker_logits.argmax(-1)
-            segment_speaker = self._speaker_recognition_model.speaker_names[segment_speaker_id]
+                speaker_probs = self._speaker_recognition_model(speaker_recog_input)  # [batch, seq_len, n_speaker]
+                speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]  TODO: batch size?
+                speaker_changes = torch.nonzero(speaker_ids[1:] - speaker_ids[:-1])  # [seq_len]
+                if len(speaker_changes) == 0:
+                    # No speaker changes, use mean prob of only speaker
+                    speaker_id = speaker_ids[0]
+                    speaker_name = self._speaker_recognition_model.speaker_names[speaker_id]
+                    speakers = [
+                        Speaker(
+                            start=time_offset,
+                            end=time_offset + segment_duration,
+                            speaker=speaker_name,
+                            probability=speaker_probs[..., speaker_id].mean()
+                        ),
+                    ]
+                else:
+                    speakers = [
+                        Speaker(
+                            start=time_offset + start_idx.item() * self.feature_extractor.time_per_frame,
+                            end=time_offset + stop_idx.item() * self.feature_extractor.time_per_frame,
+                            speaker=self._speaker_recognition_model.speaker_names[speaker_ids[start_idx]],
+                            probability=speaker_probs[0, start_idx: stop_idx, speaker_ids[start_idx]].mean().item()  # TODO: Kinda hacky, could be on word level
+                        )
+                        for start_idx, stop_idx in zip(speaker_changes[:-1], speaker_changes[1:])
+                    ]
+            # TODO: Consider encoder-decoder with whisper encoding and generated tokens
 
             (
                 result,
@@ -319,6 +400,7 @@ class SAASRModel(WhisperModel, torch.nn.Module):
                     seek += segment_size
                     continue
 
+            # TODO: Speaker recognition that also takes in generation logits/sequences
             tokens = result.sequences_ids[0]
 
             previous_seek = seek
@@ -381,29 +463,68 @@ class SAASRModel(WhisperModel, torch.nn.Module):
 
                 seek += segment_size
 
-            if options.word_timestamps:
-                self.add_word_timestamps(
-                    current_segments,
-                    tokenizer,
-                    encoder_output,
-                    segment_size,
-                    options.prepend_punctuations,
-                    options.append_punctuations,
-                    last_speech_timestamp=last_speech_timestamp,
-                )
+            # Timestamps are necessary to align speaker labels
+            self.add_word_timestamps(
+                current_segments,
+                tokenizer,
+                encoder_output,
+                segment_size,
+                options.prepend_punctuations,
+                options.append_punctuations,
+                last_speech_timestamp=last_speech_timestamp,
+            )
 
-                word_end_timestamps = [w["end"] for s in current_segments for w in s["words"]]
-                if len(word_end_timestamps) > 0:
-                    last_speech_timestamp = word_end_timestamps[-1]
-                if not single_timestamp_ending and len(word_end_timestamps) > 0:
-                    seek_shift = round((word_end_timestamps[-1] - time_offset) * self.frames_per_second)
+            word_end_timestamps = [w["end"] for s in current_segments for w in s["words"]]
+            if len(word_end_timestamps) > 0:
+                last_speech_timestamp = word_end_timestamps[-1]
+            if not single_timestamp_ending and len(word_end_timestamps) > 0:
+                seek_shift = round((word_end_timestamps[-1] - time_offset) * self.frames_per_second)
 
-                    if seek_shift > 0:
-                        seek = previous_seek + seek_shift
+                if seek_shift > 0:
+                    seek = previous_seek + seek_shift
 
             for segment in current_segments:
                 tokens = segment["tokens"]
                 text = tokenizer.decode(tokens)
+
+                # Find corresponding speaker for each word
+                word_idx = 0
+                holdover_word = False
+                for spkr in speakers:
+                    # In the case the previous speaker changed without covering 50% of the word duration
+                    if holdover_word:
+                        segment['words'][word_idx]['speaker'] = spkr.speaker
+                        segment['words'][word_idx]['speaker_probability'] = spkr.probability
+                        word_idx += 1
+
+                    # Break condition
+                    if word_idx >= len(segment['words']):
+                        break
+
+                    # Initial calculation
+                    current_word = segment['words'][word_idx]
+                    word_duration = current_word['end'] - current_word['start']
+                    intersect_duration = min(current_word['end'], spkr.end) - max(current_word['start'], spkr.start)
+                    timestamp_overlap = intersect_duration / word_duration
+
+                    # If the speaker timestamps overlap at least 50% of the word timestamp
+                    while timestamp_overlap >= 0.5:
+                        segment['words'][word_idx]['speaker'] = spkr.speaker
+                        segment['words'][word_idx]['speaker_probability'] = spkr.probability
+
+                        word_idx += 1
+                        if word_idx >= len(segment['words']) - 1:
+                            break
+                        current_word = segment['words'][word_idx]
+                        word_duration = current_word['end'] - current_word['start']
+                        intersect_duration = min(current_word['end'], spkr.end) - max(current_word['start'], spkr.start)
+                        timestamp_overlap = intersect_duration / word_duration
+                    else:
+                        holdover_word = True
+                # If there are somehow words after the speaker labels, label them as 'UNKNOWN'
+                if word_idx < len(segment['words']):
+                    segment['words'][word_idx]['speaker'] = 'UNKNOWN'
+                    segment['words'][word_idx]['speaker_probability'] = 0.5
 
                 if segment["start"] == segment["end"] or not text.strip():
                     continue
@@ -423,11 +544,11 @@ class SAASRModel(WhisperModel, torch.nn.Module):
                     compression_ratio=compression_ratio,
                     no_speech_prob=result.no_speech_prob,
                     words=(
-                        [Word(**word) for word in segment["words"]]
-                        if options.word_timestamps
-                        else None
+                        [SAWord(**word) for word in segment["words"]]
+                        #if options.word_timestamps
+                        #else None
                     ),
-                    speaker=segment_speaker
+                    speakers=speakers
                 )
 
             if (
