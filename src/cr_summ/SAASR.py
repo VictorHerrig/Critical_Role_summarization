@@ -185,11 +185,8 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             tgt: torch.Tensor,
             **kwargs
     ) -> torch.Tensor:
-        print(tgt.shape)
         decoder_out = self._decoder(tgt, **kwargs)
-        print(decoder_out.shape)
         logits = self._linear(decoder_out)
-        print(logits.shape)
         return self._smax(logits)
 
     @classmethod
@@ -330,15 +327,10 @@ class SAASRModel(WhisperModel):
             # TODO: This is not very elegant
             # Extract the CTranslate2 StorageView into a Tensor
             n_segment_frames = encoder_output.shape[1]
-            print(f'time_offset: {type(time_offset)}')
-            print(f'n_segment_frames: {type(n_segment_frames)}')
             segment_duration = self.feature_extractor.time_per_frame * n_segment_frames
-            print(f'segment_duration: {type(segment_duration)}')
-            print(encoder_output.shape, n_segment_frames, self.feature_extractor.time_per_frame, segment_duration)
             speaker_recog_input = torch.clone(torch.tensor(encoder_output))\
                 .to(torch.float32)\
                 .to(self._speaker_recognition_model.device)
-            print(speaker_recog_input.shape, speaker_recog_input.dtype)
 
             # Run speaker attribution for this segment
             # Segments are quite short
