@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools >= 69.1.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cr_summ"
+version = "0.0.3"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    'ctranslate2',
+    'datasets',
+    'numpy',
+    'faster-whisper',
+    'pandas',
+    'pyyaml',
+    'torch>=2.2.0',
+    'triton',
+    'tokenizers',
+]
+
+[project.optional-dependencies]
+tb = ['tensorboard']
+tvm = ['tvm']
+cu118 = ["unsloth[cu118-torch220] @ git+https://github.com/unslothai/unsloth.git"]
+cu121 = ["unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.git"]
+cu118-ampere = ["unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"]
+cu121-ampere = ["unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"]
+
+[tool.setuptools.package-data]
+cr_summ = ['src/modules/lib/*.so']
