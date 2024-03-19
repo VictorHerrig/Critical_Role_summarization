@@ -6,8 +6,7 @@ import ctranslate2
 import numpy as np
 import torch
 from faster_whisper.tokenizer import Tokenizer
-from faster_whisper.transcribe import WhisperModel, TranscriptionOptions, TranscriptionInfo, Word, \
-    get_compression_ratio, merge_punctuations
+from faster_whisper.transcribe import WhisperModel, TranscriptionOptions, TranscriptionInfo, merge_punctuations
 from faster_whisper.utils import format_timestamp
 from transformers import AutoModel
 
@@ -40,24 +39,6 @@ class SASegment(NamedTuple):
     words: List[SAWord]
 
 
-class SequencePool(torch.nn.Module):
-    def __init__(
-            self,
-            batch_first: bool = False
-    ):
-        super().__init__()
-        self.batch_first = batch_first
-
-    def forward(
-            self,
-            val
-    ):
-        if self.batch_first:
-            return torch.mean(val, 1)
-        else:
-            return torch.mean(val, 0)
-
-
 class SpeakerRecognitionDecoder(torch.nn.Module):
     def __init__(
             self,
@@ -78,7 +59,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         self.device = device
 
         # Decoder transformer block
-        embed_layer = torch.nn.Embedding(vocab_size, embedding_dim=input_size)
+        self.embed_layer = torch.nn.Embedding(vocab_size, embedding_dim=input_size)
         decoder_layer = torch.nn.TransformerDecoderLayer(
             d_model=input_size,
             nhead=nhead,
@@ -88,21 +69,10 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             dtype=dtype,
             batch_first=True
         )
-        decoder_fn = torch.nn.TransformerDecoder(
+        self.transformer_decoder = torch.nn.TransformerDecoder(
             decoder_layer=decoder_layer,
             num_layers=num_layers
         )
-
-        def encoder_decoder_fn(tgt: torch.Tensor, **kwargs):
-            memory = kwargs.pop('memory', None)
-            if memory is None:
-                raise ValueError('`memory` argument required for encoder-decoder architecture.')
-            print(tgt.shape, memory.shape)
-            print(tgt[:, :20])
-            embeds = embed_layer(tgt)
-            print(embeds.shape)
-            return decoder_fn(embeds, memory, **kwargs)
-        self._decoder = encoder_decoder_fn
 
         # Linear + smax for classification
         self._linear = torch.nn.Linear(
@@ -116,9 +86,15 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
     def forward(
             self,
             tgt: torch.Tensor,
+            memory: torch.Tensor,
             **kwargs
     ) -> torch.Tensor:
-        decoder_out = self._decoder(tgt, **kwargs)
+        print(tgt.shape, memory.shape)
+        print(tgt[:, :20])
+        embeds = self.embed_layer(tgt)
+        print(embeds.shape)
+        decoder_out = self.transformer_decoder(embeds, memory, **kwargs)
+
         logits = self._linear(decoder_out)
         return self._smax(logits)
 
@@ -162,23 +138,83 @@ class SAASRModel(WhisperModel):
 
     def forward(
             self,
-            waveform: Union[str, BinaryIO, np.ndarray, torch.Tensor]
+            waveform: Union[str, BinaryIO, np.ndarray, torch.Tensor],
+            tokenizer: Tokenizer,
+            options: TranscriptionOptions
     ):
         """Performs a forward pass ONLY returning the speaker labels. This is for training a speaker recognition model
         with a pre-trained whisper encoder.
 
         Parameters
         ----------
-        waveform
+        waveform: numpy.ndarray
+            Waveform input as a numpy array
+        tokenizer: Tokenizer
+            Faster whisper tokenizer
+        options: TranscriptionOptions
+            Faster whisper transcription options. Use what you will use during generation.
 
         Returns
         -------
-
+        speaker_probs: torch.Tensor
+            Tensor of shape [seq_len, n_speakers]
         """
+        # Audio encoder
         features = self.feature_extractor(waveform)
         encoder_output = self.encode(features)
-        speaker_output = self._speaker_recognition_model(encoder_output)
-        return speaker_output
+
+        # Text decoder
+        prompt = self.get_prompt(
+            tokenizer,
+            [],
+            without_timestamps=False,
+            prefix=None,
+        )
+        (
+            result,
+            avg_logprob,
+            temperature,
+            compression_ratio,
+        ) = self.generate_with_fallback(encoder_output, prompt, tokenizer, options)
+
+        speaker_recog_input = torch.clone(torch.tensor(encoder_output)) \
+            .to(torch.float32) \
+            .to(self._speaker_recognition_model.device)
+
+        tokens = result.sequences_ids[0]
+        single_timestamp_ending = len(tokens) >= 2 and tokens[-2] < tokenizer.timestamp_begin <= tokens[-1]
+        consecutive_timestamps = [
+            i
+            for i in range(len(tokens))
+            if i > 0 and tokens[i] >= tokenizer.timestamp_begin and tokens[i - 1] >= tokenizer.timestamp_begin
+        ]
+
+        # Shortened version to return only speaker probs
+        if len(consecutive_timestamps) > 0:
+            slices = list(consecutive_timestamps)
+            if single_timestamp_ending:
+                slices.append(len(tokens))
+
+            last_slice = 0
+            speaker_probs = []
+            for current_slice in slices:
+                sliced_tokens = tokens[last_slice:current_slice]
+                slice_speaker_probs = self._speaker_recognition_model(
+                    tgt=torch.tensor([sliced_tokens], dtype=torch.int32),  # [1, seq_len]
+                    memory=speaker_recog_input  # [1, n_slice_frames, model_dim]
+                )[0]  # [slice_seq_len, n_speaker]
+                speaker_probs.append(slice_speaker_probs)
+                last_slice = current_slice
+            torch.cat(speaker_probs, 0)  # [seq_len, n_speaker]
+
+        else:
+            text_tokens = [token for token in tokens if token < tokenizer.timestamp_begin]
+            speaker_probs = self._speaker_recognition_model(
+                tgt=torch.tensor([text_tokens], dtype=torch.int32),  # [1, seq_len]
+                memory=speaker_recog_input  # [1, n_frames, model_dim]
+            )[0]  # [seq_len, n_speaker]
+
+        return speaker_probs
 
     def transcribe(self, *args, **kwargs) -> Tuple[Iterable[SASegment], TranscriptionInfo]:
         # I don't want to rewrite the whole method simply to fix the type hints
@@ -194,11 +230,8 @@ class SAASRModel(WhisperModel):
         options: TranscriptionOptions,
         encoder_output: Optional[ctranslate2.StorageView] = None,
     ) -> Iterable[SASegment]:
-        content_frames = features.shape[-1] - self.feature_extractor.nb_max_frames
-        idx = 0
         seek = 0
         all_tokens = []
-        prompt_reset_since = 0
 
         if options.initial_prompt is not None:
             if isinstance(options.initial_prompt, str):
@@ -208,12 +241,13 @@ class SAASRModel(WhisperModel):
             else:
                 all_tokens.extend(options.initial_prompt)
 
+        content_frames = features.shape[-1] - self.feature_extractor.nb_max_frames
         last_speech_timestamp = 0.0
+        prompt_reset_since = 0
         while seek < content_frames:
             time_offset = seek * self.feature_extractor.time_per_frame
             segment = features[:, seek: seek + self.feature_extractor.nb_max_frames]
             segment_size = min(self.feature_extractor.nb_max_frames, content_frames - seek)
-            segment_duration = segment_size * self.feature_extractor.time_per_frame
 
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug("Processing segment at %s", format_timestamp(time_offset))
@@ -236,8 +270,6 @@ class SAASRModel(WhisperModel):
                 compression_ratio,
             ) = self.generate_with_fallback(encoder_output, prompt, tokenizer, options)
 
-
-
             # TODO: This is not very elegant
             # Extract the CTranslate2 StorageView into a Tensor
             n_segment_frames = encoder_output.shape[1]
@@ -245,8 +277,6 @@ class SAASRModel(WhisperModel):
             speaker_recog_input = torch.clone(torch.tensor(encoder_output)) \
                 .to(torch.float32) \
                 .to(self._speaker_recognition_model.device)
-
-
 
             # Check voice activity
             if options.no_speech_threshold is not None:
@@ -296,18 +326,11 @@ class SAASRModel(WhisperModel):
                     start_time = time_offset + start_timestamp_position * self.time_precision
                     end_time = time_offset + end_timestamp_position * self.time_precision
 
-
-
-                    print(speaker_recog_input.shape)
-                    print(start_timestamp_position, end_timestamp_position, start_timestamp_position - end_timestamp_position)
-
                     speaker_probs = self._speaker_recognition_model(
                         tgt=torch.tensor([sliced_tokens], dtype=torch.int32),  # [1, seq_len]
-                        memory=speaker_recog_input  # [1, n_frames, model_dim]
-                    )  # [1, seq_len, n_speaker]
-                    speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]  TODO: batch size?
-
-
+                        memory=speaker_recog_input  # [1, n_slice_frames, model_dim]
+                    )[0]  # [slice_seq_len, n_speaker]
+                    speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]
 
                     current_segments.append(
                         dict(
@@ -316,13 +339,10 @@ class SAASRModel(WhisperModel):
                             end=end_time,
                             tokens=sliced_tokens,
                             speakers=speaker_ids.tolist(),
-                            speaker_probs=speaker_probs.tolist()
+                            speaker_probs=speaker_probs
                         )
                     )
                     last_slice = current_slice
-
-
-
 
                 if single_timestamp_ending:
                     # single timestamp at the end means no speech after the last timestamp.
@@ -339,22 +359,12 @@ class SAASRModel(WhisperModel):
                     last_timestamp_position = timestamps[-1] - tokenizer.timestamp_begin
                     duration = last_timestamp_position * self.time_precision
 
-
-
-
                 text_tokens = [token for token in tokens if token < tokenizer.timestamp_begin]
-                print(len(tokens), len(text_tokens))
                 speaker_probs = self._speaker_recognition_model(
                     tgt=torch.tensor([text_tokens], dtype=torch.int32),  # [1, seq_len]
                     memory=speaker_recog_input  # [1, n_frames, model_dim]
                 )[0]  # [seq_len, n_speaker]
-                speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]  TODO: batch size?
-
-
-
-
-
-
+                speaker_ids = speaker_probs.squeeze().argmax(-1)  # [seq_len]
 
                 current_segments.append(
                     dict(
@@ -366,7 +376,6 @@ class SAASRModel(WhisperModel):
                         speaker_probs=speaker_probs
                     )
                 )
-
 
                 seek += segment_size
 
@@ -390,6 +399,7 @@ class SAASRModel(WhisperModel):
                 if seek_shift > 0:
                     seek = previous_seek + seek_shift
 
+            idx = 0
             for segment in current_segments:
                 tokens = segment["tokens"]
                 text = tokenizer.decode(tokens)
@@ -411,11 +421,7 @@ class SAASRModel(WhisperModel):
                     avg_logprob=avg_logprob,
                     compression_ratio=compression_ratio,
                     no_speech_prob=result.no_speech_prob,
-                    words=(
-                        [SAWord(**word) for word in segment["words"]]
-                        #if options.word_timestamps
-                        #else None
-                    )
+                    words=([SAWord(**word) for word in segment["words"]])
                 )
 
             if (
@@ -492,9 +498,6 @@ class SAASRModel(WhisperModel):
 
                 if timing["word"]:
 
-
-
-
                     word_tokens = timing["tokens"]
                     matching_subsets = [text_tokens[i: i + len(word_tokens)] == word_tokens for i in range(token_idx, len(text_tokens))]
                     if not any(matching_subsets):
@@ -508,8 +511,6 @@ class SAASRModel(WhisperModel):
                     word_speaker_id = speaker_probs.argmax()
                     word_speaker_name = self.speaker_names[word_speaker_id]
                     word_speaker_prob = speaker_probs[word_speaker_id].item()
-
-
 
                     words.append(
                         dict(
