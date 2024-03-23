@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import yaml
 from datasets import load_dataset, Dataset as HFDataset
+import pandas as pd
+from pydub import AudioSegment
 from torch.nn.functional import one_hot
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, AutoTokenizer
@@ -464,3 +466,88 @@ class MistralliteDialogsumDataset(MistralliteDataset, DialogsumDataset):
 
 class EncoderDecoderDialogsumDataset(EncoderDecoderDataset, DialogsumDataset):
     ...
+
+
+""" ============================= """
+"""       Speaker Recognition     """
+""" ============================= """
+
+
+class SpeakerRecognitionDataset(Dataset):
+    def __init__(
+            self,
+            cfg_file: str
+    ) -> None:
+        """Dataset that loads summary, speaker and utterance information from CRD3 json files.
+
+        Parameters
+        ----------
+        cfg_file: str
+            Path to the configuration YAML file. See dataset_train.yaml for configuration documentation.
+        """
+        super().__init__()
+        # Load config
+        with open(cfg_file, 'r') as f:
+            self._cfg: dict = yaml.safe_load(f)
+
+        annotation_path = self._cfg['annotation_path']
+        speaker_path = self._cfg['speaker_path']
+        self._annotations = pd.read_csv(annotation_path)
+        self._speakers = pd.read_csv(speaker_path)
+        self._speakers.columns = ['wav', 'speaker']
+        self._speakers = pd.Series(
+            index=self._speakers['wav'],
+            data=self._speakers['speaker']
+        )
+        self._speaker_id_map = self._cfg['speaker_ids']
+
+        required_keys = ['tokenizer_path', 'max_seq_len']
+        for k in required_keys:
+            assert k in self._cfg, f'Config must contain key {k}'
+
+        # Prepare text processing objects
+        self._max_seq_len = self._cfg['max_seq_len']
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(self._cfg['tokenizer_path'])
+
+    # -------------------- #
+    #   Concrete Methods   #
+    # -------------------- #
+
+    def load_data(self, idx: int) -> dict:
+        # TODO: Support for merging adjacent turns, clipping, multiple speakers
+        # Load data
+        subtitles = self._annotations[idx, "text"]
+        audio_path = self._annotations[idx, "name"]
+        waveform = AudioSegment.from_wav(audio_path).get_array_of_samples()
+        speaker = self._speakers[idx, audio_path]
+
+        # Transform to output format
+        # waveform = torch.Tensor(waveform).to(torch.float32)
+        subtitle_ids = self.tokenizer.encode(subtitles, add_special_tokens=True)
+        speaker_ids = [self._speaker_id_map[speaker] for _ in range(len(subtitle_ids))]
+        labels = torch.Tensor(speaker_ids).to(torch.float32)
+
+        # Return dict
+        return dict(
+            waveform=waveform,
+            subtitles=subtitles,
+            input_ids=subtitle_ids,
+            speaker=speaker,
+            labels=labels,
+        )
+
+    def __iter__(self) -> Iterator[dict]:
+        rng = np.random.default_rng()
+        for i in rng.permutation(len(self._annotations)):
+            try:
+                yield self.load_data(i)
+            except ValueError:
+                continue
+
+    def __getitem__(self, idx: int) -> dict:
+        if idx >= len(self._annotations):
+            raise IndexError('Index out of range of files')
+        return self.load_data(idx)
+
+    def __len__(self):
+        return len(self._annotations)

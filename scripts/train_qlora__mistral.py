@@ -6,16 +6,14 @@ from transformers import Trainer, TrainingArguments
 from unsloth import FastLanguageModel
 
 from cr_summ.HuggingfaceModels import QuantModelFactory
-from cr_summ import SummarizationDatasets
+from cr_summ import Datasets
 
 
 def main(passed_args: dict):
     # Instantiate datasets
     dataset_type = args['dataset_type']
-    train_dataset = getattr(SummarizationDatasets, dataset_type)('conf/dataset_train.yaml')
-    val_dataset = getattr(SummarizationDatasets, dataset_type)('conf/dataset_val.yaml')
-    # train_dataset = MistralCRD3Dataset('conf/dataset_train.yaml')
-    # val_dataset = MistralCRD3Dataset('conf/dataset_val.yaml')
+    train_dataset = getattr(Datasets, dataset_type)('conf/dataset_train.yaml')
+    val_dataset = getattr(Datasets, dataset_type)('conf/dataset_val.yaml')
 
     def val_generator():
         """Generator that yields a random subset of the val dataset with cardinality 64."""

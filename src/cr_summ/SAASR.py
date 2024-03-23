@@ -1,6 +1,6 @@
 import itertools
 import logging
-from typing import Optional, Union, BinaryIO, Iterable, Tuple, List, NamedTuple
+from typing import Optional, Union, BinaryIO, Iterable, Tuple, List, NamedTuple, Iterator
 
 import ctranslate2
 import numpy as np
@@ -59,7 +59,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         self.device = device
 
         # Decoder transformer block
-        self.embed_layer = torch.nn.Embedding(vocab_size, embedding_dim=input_size)
+        self._embed_layer = torch.nn.Embedding(vocab_size, embedding_dim=input_size)
         decoder_layer = torch.nn.TransformerDecoderLayer(
             d_model=input_size,
             nhead=nhead,
@@ -69,7 +69,7 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
             dtype=dtype,
             batch_first=True
         )
-        self.transformer_decoder = torch.nn.TransformerDecoder(
+        self._transformer_decoder = torch.nn.TransformerDecoder(
             decoder_layer=decoder_layer,
             num_layers=num_layers
         )
@@ -83,20 +83,39 @@ class SpeakerRecognitionDecoder(torch.nn.Module):
         )
         self._smax = torch.nn.Softmax(dim=-1)
 
+        self._submdules = [
+            self._embed_layer,
+            self._transformer_decoder,
+            self._linear,
+            self._smax
+        ]
+
+    def train(self, mode: bool = True):
+        self._embed_layer.train(mode)
+        self._transformer_decoder.train(mode)
+        self._linear.train(mode)
+        self._smax.train(mode)
+
+    def eval(self):
+        self._embed_layer.eval()
+        self._transformer_decoder.eval()
+        self._linear.eval()
+        self._smax.eval()
+
     def forward(
             self,
             tgt: torch.Tensor,
             memory: torch.Tensor,
             **kwargs
     ) -> torch.Tensor:
-        print(tgt.shape, memory.shape)
-        print(tgt[:, :20])
-        embeds = self.embed_layer(tgt)
-        print(embeds.shape)
-        decoder_out = self.transformer_decoder(embeds, memory, **kwargs)
+        embeds = self._embed_layer(tgt)
+        decoder_out = self._transformer_decoder(embeds, memory, **kwargs)
 
         logits = self._linear(decoder_out)
         return self._smax(logits)
+
+    def parameters(self, recurse: bool = True) -> Iterator[torch.Parameter]:
+        yield from (p for s in self._submdules for p in s.parameters())
 
 
 class SAASRModel(WhisperModel):
@@ -136,11 +155,22 @@ class SAASRModel(WhisperModel):
                 ValueError('One of speaker_model_kwargs or speaker_model_path must be passed')
             self._speaker_recognition_model = SpeakerRecognitionDecoder(**speaker_model_kwargs)
 
+    def train(self):
+        self._speaker_recognition_model.train()
+
+    def eval(self):
+        self._speaker_recognition_model.eval()
+
+    def requires_grad_(self, requires_grad: bool = True) -> "SAASRModel":
+        self._speaker_recognition_model.requires_grad_(requires_grad)
+        return self
+
     def forward(
             self,
             waveform: Union[str, BinaryIO, np.ndarray, torch.Tensor],
             tokenizer: Tokenizer,
-            options: TranscriptionOptions
+            options: TranscriptionOptions,
+            turn_text: Optional[str] = None
     ):
         """Performs a forward pass ONLY returning the speaker labels. This is for training a speaker recognition model
         with a pre-trained whisper encoder.
@@ -163,56 +193,66 @@ class SAASRModel(WhisperModel):
         features = self.feature_extractor(waveform)
         encoder_output = self.encode(features)
 
-        # Text decoder
-        prompt = self.get_prompt(
-            tokenizer,
-            [],
-            without_timestamps=False,
-            prefix=None,
-        )
-        (
-            result,
-            avg_logprob,
-            temperature,
-            compression_ratio,
-        ) = self.generate_with_fallback(encoder_output, prompt, tokenizer, options)
-
-        speaker_recog_input = torch.clone(torch.tensor(encoder_output)) \
-            .to(torch.float32) \
-            .to(self._speaker_recognition_model.device)
-
-        tokens = result.sequences_ids[0]
-        single_timestamp_ending = len(tokens) >= 2 and tokens[-2] < tokenizer.timestamp_begin <= tokens[-1]
-        consecutive_timestamps = [
-            i
-            for i in range(len(tokens))
-            if i > 0 and tokens[i] >= tokenizer.timestamp_begin and tokens[i - 1] >= tokenizer.timestamp_begin
-        ]
-
-        # Shortened version to return only speaker probs
-        if len(consecutive_timestamps) > 0:
-            slices = list(consecutive_timestamps)
-            if single_timestamp_ending:
-                slices.append(len(tokens))
-
-            last_slice = 0
-            speaker_probs = []
-            for current_slice in slices:
-                sliced_tokens = tokens[last_slice:current_slice]
-                slice_speaker_probs = self._speaker_recognition_model(
-                    tgt=torch.tensor([sliced_tokens], dtype=torch.int32),  # [1, seq_len]
-                    memory=speaker_recog_input  # [1, n_slice_frames, model_dim]
-                )[0]  # [slice_seq_len, n_speaker]
-                speaker_probs.append(slice_speaker_probs)
-                last_slice = current_slice
-            torch.cat(speaker_probs, 0)  # [seq_len, n_speaker]
-
-        else:
-            text_tokens = [token for token in tokens if token < tokenizer.timestamp_begin]
+        if turn_text is not None:
+            speaker_recog_input = torch.clone(torch.tensor(encoder_output))\
+                .to(torch.float32).to(self._speaker_recognition_model.device)
+            text_tokens = tokenizer.encode(turn_text)
             speaker_probs = self._speaker_recognition_model(
                 tgt=torch.tensor([text_tokens], dtype=torch.int32),  # [1, seq_len]
                 memory=speaker_recog_input  # [1, n_frames, model_dim]
             )[0]  # [seq_len, n_speaker]
+
+        else:
+            # Text decoder
+            prompt = self.get_prompt(
+                tokenizer,
+                [],
+                without_timestamps=False,
+                prefix=None,
+            )
+            (
+                result,
+                avg_logprob,
+                temperature,
+                compression_ratio,
+            ) = self.generate_with_fallback(encoder_output, prompt, tokenizer, options)
+
+            speaker_recog_input = torch.clone(torch.tensor(encoder_output)) \
+                .to(torch.float32) \
+                .to(self._speaker_recognition_model.device)
+
+            tokens = result.sequences_ids[0]
+            single_timestamp_ending = len(tokens) >= 2 and tokens[-2] < tokenizer.timestamp_begin <= tokens[-1]
+            consecutive_timestamps = [
+                i
+                for i in range(len(tokens))
+                if i > 0 and tokens[i] >= tokenizer.timestamp_begin and tokens[i - 1] >= tokenizer.timestamp_begin
+            ]
+
+            # Shortened version to return only speaker probs
+            if len(consecutive_timestamps) > 0:
+                slices = list(consecutive_timestamps)
+                if single_timestamp_ending:
+                    slices.append(len(tokens))
+
+                last_slice = 0
+                speaker_probs = []
+                for current_slice in slices:
+                    sliced_tokens = tokens[last_slice:current_slice]
+                    slice_speaker_probs = self._speaker_recognition_model(
+                        tgt=torch.tensor([sliced_tokens], dtype=torch.int32),  # [1, seq_len]
+                        memory=speaker_recog_input  # [1, n_slice_frames, model_dim]
+                    )[0]  # [slice_seq_len, n_speaker]
+                    speaker_probs.append(slice_speaker_probs)
+                    last_slice = current_slice
+                torch.cat(speaker_probs, 0)  # [seq_len, n_speaker]
+
+            else:
+                text_tokens = [token for token in tokens if token < tokenizer.timestamp_begin]
+                speaker_probs = self._speaker_recognition_model(
+                    tgt=torch.tensor([text_tokens], dtype=torch.int32),  # [1, seq_len]
+                    memory=speaker_recog_input  # [1, n_frames, model_dim]
+                )[0]  # [seq_len, n_speaker]
 
         return speaker_probs
 

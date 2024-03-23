@@ -3,7 +3,7 @@ import torch
 from transformers import GenerationConfig
 
 from cr_summ.HuggingfaceModels import QuantModelFactory
-from cr_summ.SummarizationDatasets import MistralCRD3Dataset, MistralDialogsumDataset
+from cr_summ.Datasets import MistralCRD3Dataset, MistralDialogsumDataset
 
 
 def main():
